@@ -117,16 +117,22 @@ Before enabling either pipeline, confirm that:
 The pipeline uploads BOMs with:
 
 - `POST /api/v1/bom`
-- `autoCreate=true`
-- `projectName`
-- `projectVersion`
+- `project` plus `projectVersion` when a fixed project UUID is configured
+- `projectName` plus `projectVersion` and `autoCreate=true` only as a bootstrap fallback
 
-That means you do not need to pre-create project UUIDs for the template to work.
+Recommended model:
+
+- pre-create one Dependency-Track project per repository
+- set `DEPENDENCY_TRACK_PROJECT_UUID` for the application project
+- set `DEPENDENCY_TRACK_IMAGE_PROJECT_UUID` for the image project when image mode is enabled
+- let the pipeline vary only `projectVersion`
+
+That keeps all commits under the same project and prevents project sprawl in Dependency-Track.
 
 > [!NOTE]
-> `BOM_UPLOAD` alone is not sufficient when the pipeline uses `autoCreate=true`.
-> If you want Dependency-Track to auto-create missing projects from CI, the API key's team also needs the `PROJECT_CREATION_UPLOAD` permission, or a broader permission set that includes project creation.
-> If you do not want to grant project-creation rights, pre-create the projects in Dependency-Track and adapt the pipeline to upload to existing projects only.
+> UUID-based uploads are the stable, preferred mode.
+> `BOM_UPLOAD` alone is sufficient when uploading to an existing project UUID.
+> `PROJECT_CREATION_UPLOAD` is only required when you rely on the name-based `autoCreate=true` fallback.
 
 ## Self-Hosted Dependency-Track Setup
 
@@ -184,21 +190,91 @@ Keep API keys scoped to automation teams rather than user accounts.
 Dependency-Track's own best-practices guidance recommends at minimum:
 
 - enable `Internal Analyzer`
-- enable `Sonatype OSS Index`
 - enable `NVD` mirroring
 - enable `GitHub Advisories` mirroring
+- enable `Sonatype OSS Index`
 
-Recommended additional setup for this stack:
+Recommended practical setup for this stack:
 
-- configure `OSS Index` with an API token, because unauthenticated access is no longer supported
 - enable the `Trivy` datasource and point it to the private Trivy server included in this repository
+- configure `NVD` with an API key so mirroring is not heavily rate limited
+- treat `OSS Index` as optional for now if Sonatype's Guide migration is blocking API authentication
+- optionally enable `OSV`, but note that Dependency-Track marks it as a preview feature in v4.13
 
 Dependency-Track admin panel locations:
 
 - `Administration -> Analyzers -> Internal Analyzer`
 - `Administration -> Analyzers -> Sonatype OSS Index`
 - `Administration -> Analyzers -> Trivy`
-- `Administration -> Vulnerability Sources` or equivalent datasource configuration areas, depending on the exact release
+- `Administration -> Vulnerability Sources -> NVD`
+- `Administration -> Vulnerability Sources -> GitHub Advisories`
+- `Administration -> Vulnerability Sources -> OSV`
+
+Recommended order:
+
+1. Enable `Internal Analyzer`.
+2. Enable `NVD` and let the initial mirror complete.
+3. Enable `GitHub Advisories`.
+4. Enable `Trivy` and verify the private Trivy server can download its DB and answer requests.
+5. Enable `OSS Index` only after you have validated the API credentials with a direct API call.
+6. Enable `OSV` only if you want the extra signal and are comfortable with preview-feature caveats.
+
+#### Internal Analyzer
+
+Leave this enabled.
+
+Dependency-Track's Internal Analyzer is the core correlation engine for mirrored vulnerability intelligence. It uses mirrored data from NVD, GitHub Advisories, OSV, and other sources to match findings against your components.
+
+What you need:
+
+- no external account
+- good component identity in your BOMs, especially valid PURLs
+
+#### NVD
+
+Enable NVD mirroring.
+
+NVD is one of the primary vulnerability sources Dependency-Track uses. The API key is optional, but strongly recommended because unauthenticated access is rate limited.
+
+How to get an NVD API key:
+
+1. Open `https://nvd.nist.gov/developers/request-an-api-key`
+2. Submit your name, email, and organization details.
+3. Open the activation email from NVD and activate the key.
+4. Paste the key into Dependency-Track's NVD configuration.
+
+What to configure:
+
+- `Enable`: `true`
+- `API Key`: your NVD API key
+
+#### GitHub Advisories
+
+Enable GitHub Advisories mirroring.
+
+GitHub Advisories adds useful coverage for GHSA records and open source ecosystems heavily represented on GitHub.
+
+How to get a GitHub token:
+
+1. Open `https://github.com/settings/personal-access-tokens`
+2. Create a fine-grained or classic personal access token.
+3. Dependency-Track's documentation states no scopes are required for GitHub Advisories mirroring.
+4. If your GitHub organization enforces SSO or PAT restrictions, authorize the token accordingly.
+5. Paste the token into Dependency-Track's GitHub Advisories configuration.
+
+What to configure:
+
+- `Enable`: `true`
+- `API Token`: your GitHub PAT
+
+> [!NOTE]
+> Dependency-Track documents that no GitHub scopes are required for this datasource. Organization-level SSO or PAT policies can still block a token even when scopes are otherwise sufficient.
+
+#### Trivy
+
+Enable the Trivy datasource and point it at the private Trivy server from this repository.
+
+This is the best way to get Dependency-Track findings closer to the Trivy-based CI gates used in the GitHub and GitLab pipelines.
 
 For the Trivy datasource configuration, set:
 
@@ -207,8 +283,56 @@ For the Trivy datasource configuration, set:
 - `API Token`: the same value as `TRIVY_SERVER_TOKEN` from `docker/.env`
 - `Ignore Unfixed`: optional, usually `false` at first so you see the full risk picture
 
+Validation steps:
+
+1. `docker compose exec trivy nslookup mirror.gcr.io`
+2. `docker compose exec trivy wget -S -O- https://mirror.gcr.io/v2/`
+3. Confirm the Trivy container logs show successful vulnerability DB updates.
+4. Trigger a BOM re-analysis in Dependency-Track and verify `TrivyAnalysisTask` no longer logs hostname or request failures.
+
 > [!IMPORTANT]
 > The Trivy server in this Compose stack is not published publicly and is not routed through Traefik, but it is attached to an outbound-capable Docker network so it can download its vulnerability database updates. Dependency-Track should still talk to it over the internal hostname `trivy` on the internal Docker network.
+
+#### Sonatype OSS Index
+
+OSS Index is still useful when it works, especially for Package URL based ecosystems like npm, but it is currently less reliable operationally because Sonatype is migrating OSS Index into Sonatype Guide.
+
+How to get credentials:
+
+1. Create or log into your Sonatype account.
+2. Open the Sonatype settings page that issues the OSS Index or Guide API token available to your account.
+3. Generate a new API token.
+4. Validate the API directly before trusting it in Dependency-Track.
+
+Validation example:
+
+```bash
+curl -i \
+  -u 'your-email@example.com:your-api-token' \
+  -H 'Content-Type: application/json' \
+  https://ossindex.sonatype.org/api/v3/component-report \
+  -d '{"coordinates":["pkg:npm/handlebars@4.7.8"]}'
+```
+
+What to configure when it works:
+
+- `Enable`: `true`
+- `Username`: your Sonatype account email
+- `API Token`: your Sonatype token
+
+> [!NOTE]
+> As of March 31, 2026, Sonatype is in the middle of migrating OSS Index into Sonatype Guide. In practice, browser login state and API token behavior may not line up cleanly. If you consistently get `401 Unauthorized` from the OSS Index API even with freshly generated credentials, treat OSS Index as temporarily unavailable and rely on `Internal + NVD + GitHub Advisories + Trivy` first.
+
+#### OSV
+
+OSV can add extra open source vulnerability coverage, but Dependency-Track marks it as a preview feature in v4.13.
+
+How to enable it:
+
+- enable OSV mirroring in Dependency-Track
+- no API token is required
+
+Use it as a supplemental source, not the foundation of the setup.
 
 ### Project naming and versioning
 
@@ -250,7 +374,9 @@ Create these repository or organization settings.
 ### GitHub variables
 
 - `DEPENDENCY_TRACK_URL`: required for default-branch and scheduled uploads
+- `DEPENDENCY_TRACK_PROJECT_UUID`: recommended, fixed UUID of the existing application project
 - `DEPENDENCY_TRACK_PROJECT_NAME`: optional, overrides the repository name
+- `DEPENDENCY_TRACK_IMAGE_PROJECT_UUID`: recommended when image mode is enabled
 - `DEPENDENCY_TRACK_IMAGE_PROJECT_NAME`: optional, overrides `<project>-image`
 - `IMAGE_ENABLED`: optional, `true` or `false`, default `false`
 - `IMAGE_NAME`: required when `IMAGE_ENABLED=true`
@@ -265,10 +391,11 @@ Create these repository or organization settings.
 Recommended GitHub setup:
 
 1. Add `DEPENDENCY_TRACK_URL` as a repository variable.
-2. Add `DEPENDENCY_TRACK_API_KEY` as a repository secret.
-3. If the repo builds a container image, set `IMAGE_ENABLED=true` and `IMAGE_NAME`.
-4. Add a nightly schedule if you want a different cadence from the default cron in the workflow.
-5. Protect the default branch so authoritative uploads come from trusted runs only.
+2. Pre-create the Dependency-Track application project and set `DEPENDENCY_TRACK_PROJECT_UUID`.
+3. Add `DEPENDENCY_TRACK_API_KEY` as a repository secret.
+4. If the repo builds a container image, set `IMAGE_ENABLED=true`, `IMAGE_NAME`, and `DEPENDENCY_TRACK_IMAGE_PROJECT_UUID`.
+5. Add a nightly schedule if you want a different cadence from the default cron in the workflow.
+6. Protect the default branch so authoritative uploads come from trusted runs only.
 
 ### GitHub runner requirements
 
@@ -283,11 +410,13 @@ Create these CI/CD variables at project, group, or instance scope.
 ### Required GitLab variables
 
 - `DEPENDENCY_TRACK_URL`
+- `DEPENDENCY_TRACK_PROJECT_UUID`
 - `DEPENDENCY_TRACK_API_KEY`
 
 ### Optional GitLab variables
 
 - `DEPENDENCY_TRACK_PROJECT_NAME`
+- `DEPENDENCY_TRACK_IMAGE_PROJECT_UUID`
 - `DEPENDENCY_TRACK_IMAGE_PROJECT_NAME`
 - `IMAGE_ENABLED`, default `false`
 - `IMAGE_NAME`, required when `IMAGE_ENABLED=true`
@@ -302,9 +431,10 @@ Create these CI/CD variables at project, group, or instance scope.
 Recommended GitLab setup:
 
 1. Add `DEPENDENCY_TRACK_API_KEY` as masked and protected.
-2. Add `DEPENDENCY_TRACK_URL` as a protected variable.
-3. Enable a nightly pipeline schedule.
-4. If image mode is enabled, use runners that support Docker-in-Docker with privileged execution.
+2. Add `DEPENDENCY_TRACK_URL` and `DEPENDENCY_TRACK_PROJECT_UUID` as protected variables.
+3. If image mode is enabled, also add `DEPENDENCY_TRACK_IMAGE_PROJECT_UUID`.
+4. Enable a nightly pipeline schedule.
+5. If image mode is enabled, use runners that support Docker-in-Docker with privileged execution.
 
 ### GitLab runner requirements
 
@@ -318,7 +448,9 @@ Recommended GitLab setup:
 | --- | --- | --- | --- |
 | `DEPENDENCY_TRACK_URL` | yes for authoritative uploads | none | Base URL for Dependency-Track, for example `https://dtrack.example.com` |
 | `DEPENDENCY_TRACK_API_KEY` | yes for authoritative uploads | none | API key used to upload BOMs |
+| `DEPENDENCY_TRACK_PROJECT_UUID` | recommended | none | Stable UUID of the existing Dependency-Track application project |
 | `DEPENDENCY_TRACK_PROJECT_NAME` | no | repo name | Dependency-Track application project name |
+| `DEPENDENCY_TRACK_IMAGE_PROJECT_UUID` | recommended for image mode | none | Stable UUID of the existing Dependency-Track image project |
 | `DEPENDENCY_TRACK_IMAGE_PROJECT_NAME` | no | `<project>-image` | Dependency-Track image project name |
 | `IMAGE_ENABLED` | no | `false` | Enables Docker build, image scan, and image SBOM upload |
 | `IMAGE_NAME` | yes when image mode is enabled | none | Local image reference prefix, for example `registry.example.com/team/service` |
@@ -354,23 +486,26 @@ Image scan artifacts when image mode is enabled:
 
 1. Copy in the GitHub workflow or GitLab pipeline.
 2. Set `DEPENDENCY_TRACK_URL`.
-3. Set `DEPENDENCY_TRACK_API_KEY`.
-4. Leave `IMAGE_ENABLED=false`.
-5. Add a nightly schedule.
-6. Run the pipeline once on the default branch and confirm the project appears in Dependency-Track.
+3. Create the application project in Dependency-Track and set `DEPENDENCY_TRACK_PROJECT_UUID`.
+4. Set `DEPENDENCY_TRACK_API_KEY`.
+5. Leave `IMAGE_ENABLED=false`.
+6. Add a nightly schedule.
+7. Run the pipeline once on the default branch and confirm new versions appear under the same Dependency-Track project.
 
 ### Repositories that build a Docker image
 
 1. Set the same Dependency-Track values.
 2. Set `IMAGE_ENABLED=true`.
-3. Set `IMAGE_NAME`.
-4. Optionally set `IMAGE_BUILD_CONTEXT`, `DOCKERFILE_PATH`, or `IMAGE_TAG`.
-5. Ensure the runner can build Docker images.
-6. Run the pipeline on the default branch and confirm both the app project and image project appear in Dependency-Track.
+3. Create the image project in Dependency-Track and set `DEPENDENCY_TRACK_IMAGE_PROJECT_UUID`.
+4. Set `IMAGE_NAME`.
+5. Optionally set `IMAGE_BUILD_CONTEXT`, `DOCKERFILE_PATH`, or `IMAGE_TAG`.
+6. Ensure the runner can build Docker images.
+7. Run the pipeline on the default branch and confirm both the app project and image project receive new versions instead of creating duplicate projects.
 
 ## Operating Notes
 
 - The upload happens before the gating step exits non-zero, so Dependency-Track still receives fresh SBOMs from authoritative runs even when the pipeline fails on critical findings.
+- The pipelines prefer UUID-based uploads to an existing project. Name-based `autoCreate=true` uploads are kept only as a fallback bootstrap mode.
 - The app SBOM and image SBOM are intentionally uploaded to separate Dependency-Track projects to keep source dependency findings separate from container runtime findings.
 - The template does not push the Docker image anywhere. It builds locally for scanning. If you also push images in another pipeline, keep the tagging model aligned.
 - If your repo has no Docker image, keep image mode disabled instead of relying on file auto-detection.

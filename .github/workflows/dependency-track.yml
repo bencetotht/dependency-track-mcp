@@ -13,7 +13,9 @@ permissions:
 env:
   ARTIFACT_DIR: artifacts/security
   INPUT_DEPENDENCY_TRACK_URL: ${{ vars.DEPENDENCY_TRACK_URL }}
+  INPUT_DEPENDENCY_TRACK_PROJECT_UUID: ${{ vars.DEPENDENCY_TRACK_PROJECT_UUID }}
   INPUT_DEPENDENCY_TRACK_PROJECT_NAME: ${{ vars.DEPENDENCY_TRACK_PROJECT_NAME }}
+  INPUT_DEPENDENCY_TRACK_IMAGE_PROJECT_UUID: ${{ vars.DEPENDENCY_TRACK_IMAGE_PROJECT_UUID }}
   INPUT_DEPENDENCY_TRACK_IMAGE_PROJECT_NAME: ${{ vars.DEPENDENCY_TRACK_IMAGE_PROJECT_NAME }}
   INPUT_IMAGE_ENABLED: ${{ vars.IMAGE_ENABLED }}
   INPUT_IMAGE_NAME: ${{ vars.IMAGE_NAME }}
@@ -40,8 +42,10 @@ jobs:
           mkdir -p "$ARTIFACT_DIR"
 
           project_name="${INPUT_DEPENDENCY_TRACK_PROJECT_NAME:-${GITHUB_REPOSITORY##*/}}"
+          project_uuid="${INPUT_DEPENDENCY_TRACK_PROJECT_UUID:-}"
           project_version="${GITHUB_SHA}"
           image_project_name="${INPUT_DEPENDENCY_TRACK_IMAGE_PROJECT_NAME:-${project_name}-image}"
+          image_project_uuid="${INPUT_DEPENDENCY_TRACK_IMAGE_PROJECT_UUID:-}"
           trivy_version="${INPUT_TRIVY_VERSION:-0.69.3}"
           trivy_timeout="${INPUT_TRIVY_TIMEOUT:-10m}"
           trivy_report_severities="${INPUT_TRIVY_REPORT_SEVERITIES:-UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL}"
@@ -49,8 +53,10 @@ jobs:
 
           {
             echo "PROJECT_NAME=$project_name"
+            echo "PROJECT_UUID=$project_uuid"
             echo "PROJECT_VERSION=$project_version"
             echo "IMAGE_PROJECT_NAME=$image_project_name"
+            echo "IMAGE_PROJECT_UUID=$image_project_uuid"
             echo "TRIVY_VERSION=$trivy_version"
             echo "TRIVY_TIMEOUT=$trivy_timeout"
             echo "TRIVY_REPORT_SEVERITIES=$trivy_report_severities"
@@ -111,16 +117,28 @@ jobs:
             exit 1
           fi
 
-          curl --fail --silent --show-error \
-            -X POST "${DEPENDENCY_TRACK_URL%/}/api/v1/bom" \
-            -H "X-Api-Key: ${DEPENDENCY_TRACK_API_KEY}" \
-            -F "autoCreate=true" \
-            -F "projectName=${PROJECT_NAME}" \
-            -F "projectVersion=${PROJECT_VERSION}" \
-            -F "bom=@${ARTIFACT_DIR}/app-sbom.cdx.json"
+          if [ -n "${PROJECT_UUID:-}" ]; then
+            curl --fail --silent --show-error \
+              -X POST "${DEPENDENCY_TRACK_URL%/}/api/v1/bom" \
+              -H "X-Api-Key: ${DEPENDENCY_TRACK_API_KEY}" \
+              -F "project=${PROJECT_UUID}" \
+              -F "projectVersion=${PROJECT_VERSION}" \
+              -F "bom=@${ARTIFACT_DIR}/app-sbom.cdx.json"
 
-          echo
-          echo "Uploaded ${PROJECT_NAME}:${PROJECT_VERSION}"
+            echo
+            echo "Uploaded ${PROJECT_UUID}:${PROJECT_VERSION}"
+          else
+            curl --fail --silent --show-error \
+              -X POST "${DEPENDENCY_TRACK_URL%/}/api/v1/bom" \
+              -H "X-Api-Key: ${DEPENDENCY_TRACK_API_KEY}" \
+              -F "autoCreate=true" \
+              -F "projectName=${PROJECT_NAME}" \
+              -F "projectVersion=${PROJECT_VERSION}" \
+              -F "bom=@${ARTIFACT_DIR}/app-sbom.cdx.json"
+
+            echo
+            echo "Uploaded ${PROJECT_NAME}:${PROJECT_VERSION} via auto-create fallback"
+          fi
 
       - name: Enforce repository vulnerability gate
         shell: bash
@@ -166,7 +184,9 @@ jobs:
           mkdir -p "$ARTIFACT_DIR"
 
           project_name="${INPUT_DEPENDENCY_TRACK_PROJECT_NAME:-${GITHUB_REPOSITORY##*/}}"
+          project_uuid="${INPUT_DEPENDENCY_TRACK_PROJECT_UUID:-}"
           image_project_name="${INPUT_DEPENDENCY_TRACK_IMAGE_PROJECT_NAME:-${project_name}-image}"
+          image_project_uuid="${INPUT_DEPENDENCY_TRACK_IMAGE_PROJECT_UUID:-}"
           project_version="${GITHUB_SHA}"
           image_name="${INPUT_IMAGE_NAME:-}"
           image_tag="${INPUT_IMAGE_TAG:-$GITHUB_SHA}"
@@ -184,7 +204,9 @@ jobs:
 
           {
             echo "PROJECT_VERSION=$project_version"
+            echo "PROJECT_UUID=$project_uuid"
             echo "IMAGE_PROJECT_NAME=$image_project_name"
+            echo "IMAGE_PROJECT_UUID=$image_project_uuid"
             echo "IMAGE_NAME=$image_name"
             echo "IMAGE_TAG=$image_tag"
             echo "LOCAL_IMAGE_REF=${image_name}:${image_tag}"
@@ -263,16 +285,28 @@ jobs:
             exit 1
           fi
 
-          curl --fail --silent --show-error \
-            -X POST "${DEPENDENCY_TRACK_URL%/}/api/v1/bom" \
-            -H "X-Api-Key: ${DEPENDENCY_TRACK_API_KEY}" \
-            -F "autoCreate=true" \
-            -F "projectName=${IMAGE_PROJECT_NAME}" \
-            -F "projectVersion=${PROJECT_VERSION}" \
-            -F "bom=@${ARTIFACT_DIR}/image-sbom.cdx.json"
+          if [ -n "${IMAGE_PROJECT_UUID:-}" ]; then
+            curl --fail --silent --show-error \
+              -X POST "${DEPENDENCY_TRACK_URL%/}/api/v1/bom" \
+              -H "X-Api-Key: ${DEPENDENCY_TRACK_API_KEY}" \
+              -F "project=${IMAGE_PROJECT_UUID}" \
+              -F "projectVersion=${PROJECT_VERSION}" \
+              -F "bom=@${ARTIFACT_DIR}/image-sbom.cdx.json"
 
-          echo
-          echo "Uploaded ${IMAGE_PROJECT_NAME}:${PROJECT_VERSION}"
+            echo
+            echo "Uploaded ${IMAGE_PROJECT_UUID}:${PROJECT_VERSION}"
+          else
+            curl --fail --silent --show-error \
+              -X POST "${DEPENDENCY_TRACK_URL%/}/api/v1/bom" \
+              -H "X-Api-Key: ${DEPENDENCY_TRACK_API_KEY}" \
+              -F "autoCreate=true" \
+              -F "projectName=${IMAGE_PROJECT_NAME}" \
+              -F "projectVersion=${PROJECT_VERSION}" \
+              -F "bom=@${ARTIFACT_DIR}/image-sbom.cdx.json"
+
+            echo
+            echo "Uploaded ${IMAGE_PROJECT_NAME}:${PROJECT_VERSION} via auto-create fallback"
+          fi
 
       - name: Enforce image vulnerability gate
         shell: bash

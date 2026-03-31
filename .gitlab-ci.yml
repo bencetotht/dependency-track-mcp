@@ -29,10 +29,12 @@ workflow:
 
       PROJECT_NAME="${DEPENDENCY_TRACK_PROJECT_NAME:-$CI_PROJECT_NAME}"
       PROJECT_VERSION="${CI_COMMIT_SHA}"
+      PROJECT_UUID="${DEPENDENCY_TRACK_PROJECT_UUID:-}"
       IMAGE_PROJECT_NAME="${DEPENDENCY_TRACK_IMAGE_PROJECT_NAME:-${PROJECT_NAME}-image}"
+      IMAGE_PROJECT_UUID="${DEPENDENCY_TRACK_IMAGE_PROJECT_UUID:-}"
       EFFECTIVE_IMAGE_TAG="${IMAGE_TAG:-$CI_COMMIT_SHA}"
 
-      export PROJECT_NAME PROJECT_VERSION IMAGE_PROJECT_NAME EFFECTIVE_IMAGE_TAG
+      export PROJECT_NAME PROJECT_VERSION PROJECT_UUID IMAGE_PROJECT_NAME IMAGE_PROJECT_UUID EFFECTIVE_IMAGE_TAG
       export LOCAL_IMAGE_REF="${IMAGE_NAME:-}:${EFFECTIVE_IMAGE_TAG}"
 
       TRIVY_ARCHIVE="trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz"
@@ -56,8 +58,9 @@ workflow:
       }
 
       upload_bom() {
-        local project_name="$1"
-        local bom_path="$2"
+        local project_uuid="$1"
+        local project_name="$2"
+        local bom_path="$3"
 
         if ! is_authoritative_run; then
           echo "Skipping Dependency-Track upload for non-authoritative pipeline."
@@ -69,6 +72,19 @@ workflow:
           return 1
         fi
 
+        if [ -n "${project_uuid}" ]; then
+          curl --fail --silent --show-error \
+            -X POST "${DEPENDENCY_TRACK_URL%/}/api/v1/bom" \
+            -H "X-Api-Key: ${DEPENDENCY_TRACK_API_KEY}" \
+            -F "project=${project_uuid}" \
+            -F "projectVersion=${PROJECT_VERSION}" \
+            -F "bom=@${bom_path}"
+
+          echo
+          echo "Uploaded ${bom_path} to Dependency-Track project UUID ${project_uuid}:${PROJECT_VERSION}"
+          return 0
+        fi
+
         curl --fail --silent --show-error \
           -X POST "${DEPENDENCY_TRACK_URL%/}/api/v1/bom" \
           -H "X-Api-Key: ${DEPENDENCY_TRACK_API_KEY}" \
@@ -78,7 +94,7 @@ workflow:
           -F "bom=@${bom_path}"
 
         echo
-        echo "Uploaded ${bom_path} to Dependency-Track project ${project_name}:${PROJECT_VERSION}"
+        echo "Uploaded ${bom_path} to Dependency-Track project ${project_name}:${PROJECT_VERSION} via auto-create fallback"
       }
 
 repo_scan:
@@ -105,7 +121,7 @@ repo_scan:
         --output "${ARTIFACT_DIR}/repo-vulns.json" \
         .
 
-      upload_bom "${PROJECT_NAME}" "${ARTIFACT_DIR}/app-sbom.cdx.json"
+      upload_bom "${PROJECT_UUID}" "${PROJECT_NAME}" "${ARTIFACT_DIR}/app-sbom.cdx.json"
 
       gate_status=0
       trivy fs \
@@ -174,7 +190,7 @@ image_scan:
         --output "${ARTIFACT_DIR}/image-vulns.json" \
         "${LOCAL_IMAGE_REF}"
 
-      upload_bom "${IMAGE_PROJECT_NAME}" "${ARTIFACT_DIR}/image-sbom.cdx.json"
+      upload_bom "${IMAGE_PROJECT_UUID}" "${IMAGE_PROJECT_NAME}" "${ARTIFACT_DIR}/image-sbom.cdx.json"
 
       gate_status=0
       trivy image \
