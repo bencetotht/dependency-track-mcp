@@ -1,5 +1,7 @@
 # Supply-Chain Security Monitoring Stack Setup
 
+test
+
 ## Goal
 
 Build a low-cost, mostly self-hosted vulnerability monitoring system that gives you:
