@@ -1,0 +1,85 @@
+services:
+  apiserver:
+    image: dependencytrack/apiserver:${DTRACK_VERSION:-4.13.6}-alpine
+    depends_on:
+      postgres:
+        condition: service_healthy
+    init: true
+    environment:
+      ALPINE_DATABASE_MODE: "external"
+      ALPINE_DATABASE_URL: "jdbc:postgresql://postgres:5432/dtrack"
+      ALPINE_DATABASE_DRIVER: "org.postgresql.Driver"
+      ALPINE_DATABASE_USERNAME: "dtrack"
+      ALPINE_DATABASE_PASSWORD: "${DTRACK_DB_PASSWORD}"
+      EXTRA_JAVA_OPTIONS: "-Xmx4G"
+    security_opt:
+      - no-new-privileges:true
+    volumes:
+      - 'dtrack-data:/data'
+    networks:
+      - dtrack_internal
+      - traefik_backend
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=traefik_backend"
+      - "traefik.http.routers.dependency-track-api.rule=Host(`${DTRACK_DOMAIN:-dep.local.bencetotht.hu}`) && PathPrefix(`/api`)"
+      - "traefik.http.routers.dependency-track-api.entrypoints=websecure"
+      - "traefik.http.routers.dependency-track-api.tls=true"
+      - "traefik.http.routers.dependency-track-api.tls.certresolver=cloudflare"
+      - "traefik.http.routers.dependency-track-api.priority=100"
+      - "traefik.http.services.dependency-track-api.loadbalancer.server.port=8080"
+    restart: unless-stopped
+
+  frontend:
+    image: dependencytrack/frontend:${DTRACK_VERSION:-4.13.6}
+    depends_on:
+      apiserver:
+        condition: service_healthy
+    init: true
+    environment:
+      API_BASE_URL: "https://${DTRACK_DOMAIN:-dep.local.bencetotht.hu}"
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - traefik_backend
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=traefik_backend"
+      - "traefik.http.routers.dependency-track.rule=Host(`${DTRACK_DOMAIN:-dep.local.bencetotht.hu}`) && !PathPrefix(`/api`)"
+      - "traefik.http.routers.dependency-track.entrypoints=websecure"
+      - "traefik.http.routers.dependency-track.tls=true"
+      - "traefik.http.routers.dependency-track.tls.certresolver=cloudflare"
+      - "traefik.http.services.dependency-track.loadbalancer.server.port=8080"
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:17-alpine
+    init: true
+    environment:
+      POSTGRES_DB: "dtrack"
+      POSTGRES_USER: "dtrack"
+      POSTGRES_PASSWORD: "${DTRACK_DB_PASSWORD}"
+      POSTGRES_INITDB_ARGS: "--data-checksums"
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}" ]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+    security_opt:
+      - no-new-privileges:true
+    volumes:
+      - "postgres-data:/var/lib/postgresql/data"
+    networks:
+      - dtrack_internal
+    restart: unless-stopped
+
+volumes:
+  dtrack-data: {}
+  postgres-data: {}
+
+networks:
+  dtrack_internal:
+    driver: bridge
+    internal: true
+  traefik_backend:
+    external: true

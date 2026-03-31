@@ -90,6 +90,11 @@ The pipeline uploads BOMs with:
 
 That means you do not need to pre-create project UUIDs for the template to work.
 
+> [!NOTE]
+> `BOM_UPLOAD` alone is not sufficient when the pipeline uses `autoCreate=true`.
+> If you want Dependency-Track to auto-create missing projects from CI, the API key's team also needs the `PROJECT_CREATION_UPLOAD` permission, or a broader permission set that includes project creation.
+> If you do not want to grant project-creation rights, pre-create the projects in Dependency-Track and adapt the pipeline to upload to existing projects only.
+
 ## GitHub Setup
 
 Create these repository or organization settings.
