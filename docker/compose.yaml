@@ -52,6 +52,24 @@ services:
       - "traefik.http.services.dependency-track.loadbalancer.server.port=8080"
     restart: unless-stopped
 
+  trivy:
+    image: aquasec/trivy:${TRIVY_SERVER_VERSION:-0.69.3}
+    init: true
+    command:
+      - server
+      - --listen
+      - :8080
+      - --token
+      - ${TRIVY_SERVER_TOKEN}
+    security_opt:
+      - no-new-privileges:true
+    volumes:
+      - "trivy-cache:/root/.cache/trivy"
+    networks:
+      - dtrack_internal
+      - traefik_backend
+    restart: unless-stopped
+
   postgres:
     image: postgres:17-alpine
     init: true
@@ -76,6 +94,7 @@ services:
 volumes:
   dtrack-data: {}
   postgres-data: {}
+  trivy-cache: {}
 
 networks:
   dtrack_internal:
