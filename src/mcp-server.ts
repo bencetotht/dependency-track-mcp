@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+import { appendFile } from "node:fs/promises";
 import { loadConfig } from "./lib/config.ts";
 import { detectProjectFromRepo, inspectProject, listFindings, listProjects } from "./lib/projects.ts";
 
@@ -71,11 +72,23 @@ const promptDefinitions = [
   },
 ];
 
+const debugLogPath = process.env.DTRACK_MCP_DEBUG_LOG;
+
+function debugLog(message: string): void {
+  if (!debugLogPath) {
+    return;
+  }
+  const line = `[${new Date().toISOString()} pid=${process.pid}] ${message}\n`;
+  void appendFile(debugLogPath, line).catch(() => {});
+}
+
 class StdioJsonRpcServer {
   private buffer = Buffer.alloc(0);
 
   start(): void {
+    debugLog(`server start cwd=${process.cwd()} argv=${JSON.stringify(process.argv)} configEnv=${process.env.DTRACK_AGENT_CONFIG ? "set" : "unset"} apiKeyEnv=${process.env.DEPENDENCY_TRACK_API_KEY ? "set" : "unset"}`);
     process.stdin.on("data", (chunk) => {
+      debugLog(`stdin chunk bytes=${chunk.length}`);
       this.buffer = Buffer.concat([this.buffer, Buffer.from(chunk)]);
       void this.processBuffer();
     });
@@ -103,12 +116,12 @@ class StdioJsonRpcServer {
       const body = this.buffer.slice(delimiterIndex + 4, totalLength).toString("utf8");
       this.buffer = this.buffer.slice(totalLength);
       const message = JSON.parse(body) as JsonRpcMessage;
+      debugLog(`message method=${message.method || "<none>"} id=${String(message.id ?? "null")}`);
       await this.handleMessage(message);
     }
   }
 
   private async handleMessage(message: JsonRpcMessage): Promise<void> {
-    const config = await loadConfig();
     switch (message.method) {
       case "initialize":
         this.reply(message.id ?? null, {
@@ -120,17 +133,22 @@ class StdioJsonRpcServer {
           },
         });
         return;
+      case "ping":
+        this.reply(message.id ?? null, {});
+        return;
       case "notifications/initialized":
+      case "notifications/cancelled":
         return;
       case "tools/list":
         this.reply(message.id ?? null, { tools: toolDefinitions });
         return;
       case "tools/call":
+        debugLog(`tools/call name=${String(message.params?.name || "")}`);
         this.reply(message.id ?? null, {
           content: [
             {
               type: "text",
-              text: JSON.stringify(await this.callTool(config, message.params || {}), null, 2),
+              text: JSON.stringify(await this.callTool(await loadConfig(), message.params || {}), null, 2),
             },
           ],
         });
@@ -141,8 +159,21 @@ class StdioJsonRpcServer {
       case "prompts/get":
         this.reply(message.id ?? null, await this.getPrompt(message.params || {}));
         return;
+      case "resources/list":
+        this.reply(message.id ?? null, { resources: [] });
+        return;
+      case "resources/templates/list":
+        this.reply(message.id ?? null, { resourceTemplates: [] });
+        return;
+      case "logging/setLevel":
+        this.reply(message.id ?? null, {
+          ok: true,
+        });
+        return;
       default:
-        this.error(message.id ?? null, `Unsupported MCP method: ${message.method}`);
+        if (message.id !== undefined) {
+          this.error(message.id ?? null, `Unsupported MCP method: ${message.method}`);
+        }
     }
   }
 
@@ -196,6 +227,7 @@ class StdioJsonRpcServer {
   }
 
   private error(id: JsonRpcId, message: string): void {
+    debugLog(`error id=${String(id)} message=${message}`);
     this.send({
       jsonrpc: "2.0",
       id,
@@ -208,8 +240,17 @@ class StdioJsonRpcServer {
 
   private send(payload: unknown): void {
     const body = JSON.stringify(payload);
+    debugLog(`send bytes=${Buffer.byteLength(body, "utf8")}`);
     process.stdout.write(`Content-Length: ${Buffer.byteLength(body, "utf8")}\r\n\r\n${body}`);
   }
 }
+
+process.on("uncaughtException", (error) => {
+  debugLog(`uncaughtException ${error instanceof Error ? error.stack || error.message : String(error)}`);
+});
+
+process.on("unhandledRejection", (reason) => {
+  debugLog(`unhandledRejection ${reason instanceof Error ? reason.stack || reason.message : String(reason)}`);
+});
 
 new StdioJsonRpcServer().start();

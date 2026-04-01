@@ -31,7 +31,7 @@ MCP is optional. The toolkit works without MCP.
 
 ## Default Agent Behavior
 
-By default, the installed agent assets prefer MCP when an MCP connection to this server is available.
+By default, the installed agent assets prefer MCP when an MCP connection to this server is available in Codex or Claude Code.
 
 If the MCP server is not configured or not connected, the agent falls back to the local CLI.
 
@@ -127,6 +127,9 @@ Codex installation copies:
 Claude installation copies:
 
 - `agent-assets/claude/commands/dtrack-triage.md` to `~/.claude/commands`
+- `agent-assets/claude/commands/dtrack-install-assets.md` to `~/.claude/commands`
+- `agent-assets/claude/commands/dtrack-install-claude-assets.md` to `~/.claude/commands`
+- `agent-assets/claude/commands/dtrack-install-codex-assets.md` to `~/.claude/commands`
 
 ### Why These Files Exist
 
@@ -156,6 +159,21 @@ The installed files are intentionally small and opinionated. They give the agent
 
 - Adds a Claude slash-command style instruction for the same Dependency-Track lookup flow.
 - Keeps Claude aligned with the same responsibility boundary as the Codex assets.
+
+`agent-assets/claude/commands/dtrack-install-assets.md`
+
+- Adds a Claude slash command that runs the local `install-agent-assets` CLI flow for both Codex and Claude assets.
+- Gives Claude a repeatable way to refresh the installed assets from this repository checkout.
+
+`agent-assets/claude/commands/dtrack-install-claude-assets.md`
+
+- Adds a Claude slash command for installing or refreshing only the Claude command assets.
+- Mirrors the CLI `install-agent-assets --claude` behavior.
+
+`agent-assets/claude/commands/dtrack-install-codex-assets.md`
+
+- Adds a Claude slash command for installing or refreshing only the Codex assets.
+- Mirrors the CLI `install-agent-assets --codex` behavior.
 
 ### Why Install Them Locally
 
@@ -216,12 +234,14 @@ Use CLI mode when:
 
 MCP mode is also supported, but it is optional.
 
-The MCP server is a stdio process started from this repository:
+The MCP server is a stdio process started from this repository and it works with both Codex and Claude Code:
 
 ```bash
 bun run build
 bun dist/mcp-server.js
 ```
+
+### Codex Setup
 
 To use it with Codex, add the MCP server to Codex directly.
 
@@ -270,14 +290,62 @@ startup_timeout_sec = 30
 DTRACK_AGENT_CONFIG = "/absolute/path/to/this-repo/dtrack-agent.config.json"
 ```
 
+### Claude Code Setup
+
+To use the same stdio server with Claude Code, add it with the Claude CLI.
+
+Replace the example paths below with the absolute path to your own checkout of this repository.
+
+Recommended command:
+
+```bash
+claude mcp add dtrack \
+  --scope local \
+  --env DTRACK_AGENT_CONFIG=/absolute/path/to/this-repo/dtrack-agent.config.json \
+  -- bun /absolute/path/to/this-repo/dist/mcp-server.js
+```
+
+If Claude Code does not already inherit `DEPENDENCY_TRACK_API_KEY`, add it explicitly:
+
+```bash
+claude mcp add dtrack \
+  --scope local \
+  --env DTRACK_AGENT_CONFIG=/absolute/path/to/this-repo/dtrack-agent.config.json \
+  --env DEPENDENCY_TRACK_API_KEY=your_api_key_here \
+  -- bun /absolute/path/to/this-repo/dist/mcp-server.js
+```
+
+Verify the setup:
+
+```bash
+claude mcp list
+claude mcp get dtrack
+```
+
+Inside Claude Code, use `/mcp` to inspect the connected server.
+
+The `dtrack-triage` MCP prompt is also exposed as a Claude slash command with the normalized name:
+
+```text
+/mcp__dtrack__dtrack_triage
+```
+
+If Claude Code needs a longer server startup timeout, launch it with a larger `MCP_TIMEOUT` value:
+
+```bash
+MCP_TIMEOUT=30000 claude
+```
+
+If you want to share the same Claude MCP setup with the rest of the team, use `claude mcp add --scope project ...` to create or update a project `.mcp.json`.
+
 Why this is the recommended setup:
 
 - `dist/mcp-server.js` is the built local stdio MCP server
-- Codex can launch local stdio MCP servers with `codex mcp add <name> -- <command...>`
+- Codex and Claude Code can both launch local stdio MCP servers directly
 - `DTRACK_AGENT_CONFIG` should point to an absolute path so the server can always find the correct config file
 - the built file starts more predictably than pointing Codex at the TypeScript source file directly
 
-If you prefer, you can also configure the same server directly in `~/.codex/config.toml`, but `codex mcp add` is the simplest path.
+If you prefer, you can also configure the same server directly in `~/.codex/config.toml`, but `codex mcp add` is the simplest Codex path.
 
 What the MCP server provides:
 

@@ -32,7 +32,7 @@ You can expose this toolkit to an agent in two ways:
 
 MCP is optional. The toolkit works in CLI-only mode.
 
-By default, the installed agent assets prefer MCP if the server is connected. If not, they fall back to the CLI.
+By default, the installed agent assets prefer MCP if the server is connected in Codex or Claude Code. If not, they fall back to the CLI.
 
 ## What This Repo Contains
 
@@ -41,7 +41,7 @@ By default, the installed agent assets prefer MCP if the server is connected. If
 - `src/lib/projects.ts`: project detection and findings query logic
 - `agent-assets/skill/dependency-track-query`: repo-local Codex skill
 - `agent-assets/codex/prompts`: Codex prompt assets
-- `agent-assets/claude/commands`: Claude command assets
+- `agent-assets/claude/commands`: Claude slash command assets
 - `dtrack-agent.config.example.json`: minimal config example
 - `docker/compose.yaml`: optional local Dependency-Track stack for development/testing
 
@@ -127,7 +127,11 @@ bun run build
 bun dist/mcp-server.js
 ```
 
-MCP setup is optional. To use it with Codex, add this repository's MCP server to your local Codex configuration.
+MCP setup is optional. The stdio server works with both Codex and Claude Code.
+
+### Codex Setup
+
+To use it with Codex, add this repository's MCP server to your local Codex configuration.
 
 Replace the example paths below with the absolute path to your own checkout of this repository.
 
@@ -175,6 +179,54 @@ DTRACK_AGENT_CONFIG = "/absolute/path/to/this-repo/dtrack-agent.config.json"
 ```
 
 The absolute `DTRACK_AGENT_CONFIG` path is recommended so the MCP server can always find the correct config file regardless of the working directory Codex uses when launching it.
+
+### Claude Code Setup
+
+To use the same MCP server with Claude Code, add the built stdio server with the Claude CLI.
+
+Replace the example paths below with the absolute path to your own checkout of this repository.
+
+Recommended command:
+
+```bash
+claude mcp add dtrack \
+  --scope local \
+  --env DTRACK_AGENT_CONFIG=/absolute/path/to/this-repo/dtrack-agent.config.json \
+  -- bun /absolute/path/to/this-repo/dist/mcp-server.js
+```
+
+If Claude Code does not already inherit `DEPENDENCY_TRACK_API_KEY`, add it too:
+
+```bash
+claude mcp add dtrack \
+  --scope local \
+  --env DTRACK_AGENT_CONFIG=/absolute/path/to/this-repo/dtrack-agent.config.json \
+  --env DEPENDENCY_TRACK_API_KEY=your_api_key_here \
+  -- bun /absolute/path/to/this-repo/dist/mcp-server.js
+```
+
+Verify the setup:
+
+```bash
+claude mcp list
+claude mcp get dtrack
+```
+
+Inside Claude Code, use `/mcp` to inspect the connected server, available tools, and prompts.
+
+The exposed MCP prompt also becomes a Claude slash command with the normalized name:
+
+```text
+/mcp__dtrack__dtrack_triage
+```
+
+If Claude Code needs a longer startup timeout, launch it with a larger `MCP_TIMEOUT` value:
+
+```bash
+MCP_TIMEOUT=30000 claude
+```
+
+If you prefer to share the Claude MCP configuration with the whole repository, `claude mcp add --scope project ...` will create or update a project `.mcp.json`.
 
 The MCP server uses the same `dtrack-agent.config.json` file and Dependency-Track API key environment variable as the CLI.
 
@@ -224,9 +276,18 @@ bun run src/cli.ts install-agent-assets --claude
 
 This copies:
 
-- Claude commands to `~/.claude/commands`
+- Claude slash commands to `~/.claude/commands`
 - Codex prompts to `~/.codex/prompts`
 - Codex skill to `~/.codex/skills/dependency-track-query`
+
+Installed Claude commands:
+
+- `/dtrack-triage`
+- `/dtrack-install-assets`
+- `/dtrack-install-claude-assets`
+- `/dtrack-install-codex-assets`
+
+The install commands are thin wrappers around the local CLI and are meant to be run from this toolkit repository checkout.
 
 ## Output Shape
 
