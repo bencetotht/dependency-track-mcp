@@ -10,6 +10,7 @@ type JsonRpcMessage = {
   method?: string;
   params?: Record<string, unknown>;
 };
+type TransportMode = "content-length" | "newline-json";
 
 const toolDefinitions = [
   {
@@ -84,11 +85,13 @@ function debugLog(message: string): void {
 
 class StdioJsonRpcServer {
   private buffer = Buffer.alloc(0);
+  private transportMode: TransportMode | null = null;
 
   start(): void {
     debugLog(`server start cwd=${process.cwd()} argv=${JSON.stringify(process.argv)} configEnv=${process.env.DTRACK_AGENT_CONFIG ? "set" : "unset"} apiKeyEnv=${process.env.DEPENDENCY_TRACK_API_KEY ? "set" : "unset"}`);
     process.stdin.on("data", (chunk) => {
       debugLog(`stdin chunk bytes=${chunk.length}`);
+      debugLog(`stdin preview=${JSON.stringify(Buffer.from(chunk).toString("utf8").slice(0, 400))}`);
       this.buffer = Buffer.concat([this.buffer, Buffer.from(chunk)]);
       void this.processBuffer();
     });
@@ -96,29 +99,85 @@ class StdioJsonRpcServer {
 
   private async processBuffer(): Promise<void> {
     while (true) {
-      const delimiterIndex = this.buffer.indexOf("\r\n\r\n");
-      if (delimiterIndex === -1) {
+      const messageBody = this.extractMessageBody();
+      if (!messageBody) {
         return;
       }
 
-      const header = this.buffer.slice(0, delimiterIndex).toString("utf8");
-      const match = header.match(/Content-Length:\s*(\d+)/i);
-      if (!match) {
-        throw new Error("Missing Content-Length header.");
+      if (!this.transportMode) {
+        this.transportMode = messageBody.mode;
       }
 
-      const contentLength = Number(match[1]);
-      const totalLength = delimiterIndex + 4 + contentLength;
-      if (this.buffer.length < totalLength) {
-        return;
-      }
-
-      const body = this.buffer.slice(delimiterIndex + 4, totalLength).toString("utf8");
-      this.buffer = this.buffer.slice(totalLength);
-      const message = JSON.parse(body) as JsonRpcMessage;
+      const message = JSON.parse(messageBody.body) as JsonRpcMessage;
       debugLog(`message method=${message.method || "<none>"} id=${String(message.id ?? "null")}`);
       await this.handleMessage(message);
     }
+  }
+
+  private extractMessageBody(): { body: string; mode: TransportMode } | null {
+    const contentLengthMessage = this.extractContentLengthMessage();
+    if (contentLengthMessage) {
+      return {
+        body: contentLengthMessage,
+        mode: "content-length",
+      };
+    }
+
+    const newlineMessage = this.extractNewlineDelimitedMessage();
+    if (newlineMessage) {
+      return {
+        body: newlineMessage,
+        mode: "newline-json",
+      };
+    }
+
+    return null;
+  }
+
+  private extractContentLengthMessage(): string | null {
+    const crlfDelimiterIndex = this.buffer.indexOf("\r\n\r\n");
+    const lfDelimiterIndex = this.buffer.indexOf("\n\n");
+
+    if (crlfDelimiterIndex === -1 && lfDelimiterIndex === -1) {
+      return null;
+    }
+
+    const delimiterIndex = crlfDelimiterIndex !== -1 && (lfDelimiterIndex === -1 || crlfDelimiterIndex < lfDelimiterIndex)
+      ? crlfDelimiterIndex
+      : lfDelimiterIndex;
+    const delimiterLength = delimiterIndex === crlfDelimiterIndex ? 4 : 2;
+    const header = this.buffer.slice(0, delimiterIndex).toString("utf8");
+    const match = header.match(/Content-Length:\s*(\d+)/i);
+    if (!match) {
+      return null;
+    }
+
+    const contentLength = Number(match[1]);
+    const bodyStart = delimiterIndex + delimiterLength;
+    const totalLength = bodyStart + contentLength;
+    if (this.buffer.length < totalLength) {
+      return null;
+    }
+
+    const body = this.buffer.slice(bodyStart, totalLength).toString("utf8");
+    this.buffer = this.buffer.slice(totalLength);
+    return body;
+  }
+
+  private extractNewlineDelimitedMessage(): string | null {
+    const newlineIndex = this.buffer.indexOf("\n");
+    if (newlineIndex === -1) {
+      return null;
+    }
+
+    const line = this.buffer.slice(0, newlineIndex).toString("utf8").replace(/\r$/, "").trim();
+    this.buffer = this.buffer.slice(newlineIndex + 1);
+
+    if (!line) {
+      return null;
+    }
+
+    return line;
   }
 
   private async handleMessage(message: JsonRpcMessage): Promise<void> {
@@ -241,6 +300,10 @@ class StdioJsonRpcServer {
   private send(payload: unknown): void {
     const body = JSON.stringify(payload);
     debugLog(`send bytes=${Buffer.byteLength(body, "utf8")}`);
+    if (this.transportMode === "newline-json") {
+      process.stdout.write(`${body}\n`);
+      return;
+    }
     process.stdout.write(`Content-Length: ${Buffer.byteLength(body, "utf8")}\r\n\r\n${body}`);
   }
 }
