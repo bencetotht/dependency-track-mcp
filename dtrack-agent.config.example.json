@@ -1,0 +1,44 @@
+{
+  "dependencyTrack": {
+    "url": "https://dep.example.com",
+    "apiKeyEnv": "DEPENDENCY_TRACK_API_KEY"
+  },
+  "workspaceRoot": ".dtrack-agent/workspaces",
+  "github": {
+    "tokenEnv": "GITHUB_TOKEN",
+    "apiBaseUrl": "https://api.github.com"
+  },
+  "gitlab": {
+    "tokenEnv": "GITLAB_TOKEN"
+  },
+  "remediation": {
+    "branchPrefix": "dtrack/fix",
+    "maxFindingsPerRun": 5,
+    "severity": "CRITICAL"
+  },
+  "projects": [
+    {
+      "key": "simplemailer",
+      "dependencyTrackName": "simplemailer",
+      "projectUuid": "",
+      "classifier": "APPLICATION",
+      "provider": "github",
+      "cloneUrl": "https://github.com/example/simplemailer.git",
+      "defaultBranch": "main",
+      "localPath": "",
+      "imageProjectUuid": ""
+    },
+    {
+      "key": "vulnerability-monitoring",
+      "dependencyTrackName": "vulnerability-monitoring",
+      "projectUuid": "",
+      "classifier": "APPLICATION",
+      "provider": "gitlab",
+      "cloneUrl": "https://gitlab.example.com/security/vulnerability-monitoring.git",
+      "defaultBranch": "main",
+      "localPath": "",
+      "imageProjectUuid": ""
+    }
+  ]
+}
+

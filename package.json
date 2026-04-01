@@ -1,0 +1,18 @@
+{
+  "name": "dependency-track-agent-toolkit",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "CLI and MCP toolkit for Dependency-Track remediation workflows",
+  "bin": {
+    "dtrack-agent": "dist/cli.js",
+    "dtrack-agent-mcp": "dist/mcp-server.js"
+  },
+  "scripts": {
+    "build": "bun build src/cli.ts src/mcp-server.ts --outdir dist --target bun",
+    "cli": "bun run src/cli.ts",
+    "mcp": "bun run src/mcp-server.ts",
+    "test": "bun test"
+  }
+}
+
