@@ -9,14 +9,21 @@ Use this skill when the task is to inspect Dependency-Track data and remediate c
 
 ## Workflow
 
-1. Use the Dependency-Track project name or UUID directly.
-2. Prefer the MCP tools if the MCP server is connected.
-3. Otherwise use the CLI:
+1. If you are already inside the target repository, prefer current-repo detection first.
+2. If needed, fall back to an explicit Dependency-Track project name or UUID.
+3. Prefer the MCP tools if the MCP server is connected.
+4. Otherwise use the CLI:
+   - `bun run src/cli.ts projects detect`
+   - `bun run src/cli.ts projects inspect`
+   - `bun run src/cli.ts findings list`
+   - `bun run src/cli.ts fix critical` for dry run
+   - `bun run src/cli.ts fix critical --apply` to create the branch and PR/MR
+5. For explicit project targeting:
    - `bun run src/cli.ts projects inspect <project-name-or-uuid>`
    - `bun run src/cli.ts findings list <project-name-or-uuid> CRITICAL`
-   - `bun run src/cli.ts fix critical <project-name-or-uuid>` for dry run
-   - `bun run src/cli.ts fix critical <project-name-or-uuid> --apply` to create the branch and PR/MR
-4. Summarize:
+   - `bun run src/cli.ts fix critical <project-name-or-uuid>`
+6. Summarize:
+   - detected project match or explicit project target
    - latest Dependency-Track project version
    - critical fixable findings
    - skipped findings and reasons
@@ -26,6 +33,7 @@ Use this skill when the task is to inspect Dependency-Track data and remediate c
 ## Guardrails
 
 - Do not assume the Dependency-Track project name equals the repo slug.
+- When operating from a checked-out repo, prefer matching by git remote URL instead of guessing by name.
 - For remediation, prefer repo metadata stored on the Dependency-Track project as properties:
   - `automation.provider`
   - `automation.cloneUrl`

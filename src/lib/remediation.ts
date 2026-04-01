@@ -1,6 +1,6 @@
 import { findProjectMapping } from "./config.ts";
 import { DependencyTrackClient } from "./dtrack.ts";
-import { commitAndPush, ensureRepository, hasChanges, prepareBranch } from "./git.ts";
+import { commitAndPush, ensureRepository, findGitRoot, getGitRemoteUrl, hasChanges, normalizeGitRemoteUrl, prepareBranch } from "./git.ts";
 import { buildTestCommand, buildUpgradeCommand, detectPackageManager, findDependencyType, readPackageJson } from "./package-managers.ts";
 import { openPullRequestOrMr } from "./providers.ts";
 import type {
@@ -95,6 +95,29 @@ function inferCloneUrlFromProject(project: DtrackProject): string | undefined {
   return ref?.url;
 }
 
+function projectCloneUrlCandidates(
+  project: DtrackProject,
+  properties: DtrackProjectProperty[],
+  override?: ProjectMapping,
+): string[] {
+  const lookup = propertyLookup(properties);
+  const candidates = [
+    override?.cloneUrl,
+    lookup.get("automation.cloneurl"),
+    lookup.get("automation.repourl"),
+    lookup.get("automation.repositoryurl"),
+    lookup.get("repo.cloneurl"),
+    lookup.get("repo.repositoryurl"),
+    lookup.get("vcs.cloneurl"),
+    lookup.get("vcs.repositoryurl"),
+    lookup.get("cloneurl"),
+    lookup.get("repositoryurl"),
+    inferCloneUrlFromProject(project),
+  ].filter((value): value is string => Boolean(value && value.trim()));
+
+  return [...new Set(candidates.map((item) => normalizeGitRemoteUrl(item)))];
+}
+
 async function resolveProjectTarget(config: ToolkitConfig, identifier: string): Promise<{
   resolved: ResolvedProject;
   properties: DtrackProjectProperty[];
@@ -112,6 +135,63 @@ async function resolveProjectTarget(config: ToolkitConfig, identifier: string): 
     },
     properties,
   };
+}
+
+async function resolveProjectFromRepo(config: ToolkitConfig, repoPath?: string): Promise<{
+  resolved: ResolvedProject;
+  properties: DtrackProjectProperty[];
+  repoPath: string;
+  remoteUrl: string;
+}> {
+  const gitRoot = await findGitRoot(repoPath || process.cwd());
+  const remoteUrl = normalizeGitRemoteUrl(await getGitRemoteUrl(gitRoot));
+  const client = new DependencyTrackClient(config);
+  const projects = await client.listProjects();
+
+  const grouped = new Map<string, DtrackProject>();
+  for (const project of projects) {
+    const groupKey = `${project.name.toLowerCase()}::${(project.classifier || "").toLowerCase()}`;
+    const existing = grouped.get(groupKey);
+    if (!existing) {
+      grouped.set(groupKey, project);
+      continue;
+    }
+    if (project.latestVersion === true && existing.latestVersion !== true) {
+      grouped.set(groupKey, project);
+      continue;
+    }
+    const existingTs = existing.lastBomImport ? new Date(existing.lastBomImport).getTime() : 0;
+    const projectTs = project.lastBomImport ? new Date(project.lastBomImport).getTime() : 0;
+    if (projectTs > existingTs) {
+      grouped.set(groupKey, project);
+    }
+  }
+
+  for (const project of grouped.values()) {
+    const override = findProjectMapping(config, project.uuid) || findProjectMapping(config, project.name);
+    const properties = await client.getProjectProperties(project.uuid);
+    const candidates = projectCloneUrlCandidates(project, properties, override);
+    if (candidates.includes(remoteUrl)) {
+      return {
+        resolved: {
+          mapping: override,
+          project,
+        },
+        properties,
+        repoPath: gitRoot,
+        remoteUrl,
+      };
+    }
+  }
+
+  fail([
+    `No Dependency-Track project matched the current repository remote '${remoteUrl}'.`,
+    "Add one of these project properties on the correct Dependency-Track project:",
+    "- automation.cloneUrl",
+    "- automation.repositoryUrl",
+    "- repo.cloneUrl",
+    "Or add a matching local override in dtrack-agent.config.json.",
+  ].join("\n"));
 }
 
 function buildRemediationMapping(
@@ -228,18 +308,56 @@ export async function listProjects(config: ToolkitConfig, query?: string): Promi
     }));
 }
 
-export async function inspectProject(config: ToolkitConfig, identifier: string): Promise<unknown> {
-  const { resolved, properties } = await resolveProjectTarget(config, identifier);
+function placeholderMapping(project: DtrackProject): ProjectMapping {
+  return {
+    key: project.name,
+    dependencyTrackName: project.name,
+    projectUuid: project.uuid,
+    provider: "github",
+    cloneUrl: "https://example.invalid/placeholder.git",
+    defaultBranch: "main",
+  };
+}
+
+export async function detectProjectFromRepo(config: ToolkitConfig, repoPath?: string): Promise<unknown> {
+  const detected = await resolveProjectFromRepo(config, repoPath);
+  let remediation: Record<string, unknown>;
+  try {
+    const mapping = buildRemediationMapping(detected.resolved.project, detected.properties, detected.resolved.mapping);
+    remediation = {
+      ready: true,
+      provider: mapping.provider,
+      cloneUrl: mapping.cloneUrl,
+      defaultBranch: mapping.defaultBranch,
+      localPath: mapping.localPath || detected.repoPath,
+    };
+  } catch (error) {
+    remediation = {
+      ready: false,
+      reason: error instanceof Error ? error.message : String(error),
+    };
+  }
+
+  return {
+    project: detected.resolved.project,
+    repoPath: detected.repoPath,
+    remoteUrl: detected.remoteUrl,
+    remediation,
+    properties: detected.properties.map((item) => ({
+      groupName: item.groupName,
+      propertyName: item.propertyName,
+      propertyValue: item.propertyValue,
+    })),
+  };
+}
+
+export async function inspectProject(config: ToolkitConfig, identifier?: string, repoPath?: string): Promise<unknown> {
+  const { resolved, properties } = identifier
+    ? await resolveProjectTarget(config, identifier)
+    : await resolveProjectFromRepo(config, repoPath);
   const client = new DependencyTrackClient(config);
   const { findings } = await client.getFindings(
-    resolved.mapping || {
-      key: resolved.project.name,
-      dependencyTrackName: resolved.project.name,
-      projectUuid: resolved.project.uuid,
-      provider: "github",
-      cloneUrl: "https://example.invalid/placeholder.git",
-      defaultBranch: "main",
-    },
+    resolved.mapping || placeholderMapping(resolved.project),
     "LOW",
   );
 
@@ -276,18 +394,18 @@ export async function inspectProject(config: ToolkitConfig, identifier: string):
   };
 }
 
-export async function listFindings(config: ToolkitConfig, identifier: string, severity: Severity = "CRITICAL"): Promise<unknown> {
-  const { resolved } = await resolveProjectTarget(config, identifier);
+export async function listFindings(
+  config: ToolkitConfig,
+  identifier?: string,
+  severity: Severity = "CRITICAL",
+  repoPath?: string,
+): Promise<unknown> {
+  const { resolved } = identifier
+    ? await resolveProjectTarget(config, identifier)
+    : await resolveProjectFromRepo(config, repoPath);
   const client = new DependencyTrackClient(config);
   const { project, findings } = await client.getFindings(
-    resolved.mapping || {
-      key: resolved.project.name,
-      dependencyTrackName: resolved.project.name,
-      projectUuid: resolved.project.uuid,
-      provider: "github",
-      cloneUrl: "https://example.invalid/placeholder.git",
-      defaultBranch: "main",
-    },
+    resolved.mapping || placeholderMapping(resolved.project),
     severity,
   );
   return {
@@ -363,23 +481,32 @@ async function maybeRunTrivy(repoPath: string): Promise<ValidationStep> {
 
 export async function remediateCritical(
   config: ToolkitConfig,
-  identifier: string,
+  identifier?: string,
   apply: boolean,
+  repoPath?: string,
   findingId?: string,
 ): Promise<RemediationOutcome> {
-  const { resolved, properties } = await resolveProjectTarget(config, identifier);
+  const target = identifier
+    ? await resolveProjectTarget(config, identifier)
+    : await resolveProjectFromRepo(config, repoPath);
+  const resolved = target.resolved;
+  const properties = target.properties;
   const mapping = buildRemediationMapping(resolved.project, properties, resolved.mapping);
+  const effectiveRepoPath = "repoPath" in target ? target.repoPath : repoPath;
+  if (effectiveRepoPath) {
+    mapping.localPath = effectiveRepoPath;
+  }
   const client = new DependencyTrackClient(config);
   const { project, findings } = await client.getFindings(mapping, config.remediation?.severity || "CRITICAL");
   const candidateFindings = groupFixableFindings(findings, config.remediation?.severity || "CRITICAL", findingId)
     .slice(0, config.remediation?.maxFindingsPerRun || 5);
 
-  const repoPath = await ensureRepository(config, mapping);
-  const packageManager = await detectPackageManager(repoPath);
+  const workingRepoPath = await ensureRepository(config, mapping);
+  const packageManager = await detectPackageManager(workingRepoPath);
   if (!packageManager) {
-    fail(`No supported Node package manager lockfile found in ${repoPath}.`);
+    fail(`No supported Node package manager lockfile found in ${workingRepoPath}.`);
   }
-  const packageJson = await readPackageJson(repoPath);
+  const packageJson = await readPackageJson(workingRepoPath);
 
   const updatedPackages: RemediationOutcome["updatedPackages"] = [];
   const skippedFindings: RemediationOutcome["skippedFindings"] = [];
@@ -420,7 +547,7 @@ export async function remediateCritical(
       projectKey: mapping.key,
       projectUuid: project.uuid,
       projectVersion: project.version,
-      repoPath,
+      repoPath: workingRepoPath,
       branchName,
       updatedPackages,
       skippedFindings,
@@ -434,30 +561,30 @@ export async function remediateCritical(
       projectKey: mapping.key,
       projectUuid: project.uuid,
       projectVersion: project.version,
-      repoPath,
+      repoPath: workingRepoPath,
       updatedPackages,
       skippedFindings,
       validations,
     };
   }
 
-  await prepareBranch(repoPath, mapping.defaultBranch, branchName);
+  await prepareBranch(workingRepoPath, mapping.defaultBranch, branchName);
 
   for (const item of updatedPackages) {
-    await execCommand(buildUpgradeCommand(packageManager, item.name, item.toVersion, item.dependencyType), { cwd: repoPath });
+    await execCommand(buildUpgradeCommand(packageManager, item.name, item.toVersion, item.dependencyType), { cwd: workingRepoPath });
   }
 
-  validations.push(await maybeRunValidationStep(repoPath, "tests", buildTestCommand(packageManager, packageJson)));
-  validations.push(await maybeRunTrivy(repoPath));
+  validations.push(await maybeRunValidationStep(workingRepoPath, "tests", buildTestCommand(packageManager, packageJson)));
+  validations.push(await maybeRunTrivy(workingRepoPath));
 
-  if (!(await hasChanges(repoPath))) {
+  if (!(await hasChanges(workingRepoPath))) {
     skippedFindings.push({ findingId: "none", reason: "Package manager completed but no file changes were produced." });
     return {
       mode: "apply",
       projectKey: mapping.key,
       projectUuid: project.uuid,
       projectVersion: project.version,
-      repoPath,
+      repoPath: workingRepoPath,
       branchName,
       updatedPackages,
       skippedFindings,
@@ -468,7 +595,7 @@ export async function remediateCritical(
   await commitAndPush(
     config,
     mapping,
-    repoPath,
+    workingRepoPath,
     branchName,
     "fix(deps): remediate critical dependency-track findings",
   );
@@ -496,7 +623,7 @@ export async function remediateCritical(
     projectKey: mapping.key,
     projectUuid: project.uuid,
     projectVersion: project.version,
-    repoPath,
+    repoPath: workingRepoPath,
     branchName,
     prUrl: mapping.provider === "github" ? prUrl : undefined,
     mrUrl: mapping.provider === "gitlab" ? prUrl : undefined,

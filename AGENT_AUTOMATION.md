@@ -34,11 +34,35 @@ Examples:
 
 ```bash
 bun run src/cli.ts projects list
+bun run src/cli.ts projects detect
 bun run src/cli.ts projects inspect simplemailer
 bun run src/cli.ts findings list simplemailer CRITICAL
 ```
 
 You no longer need to maintain a full local project registry just to inspect or triage projects.
+
+## Current Repo Workflow
+
+The toolkit now supports the intended agent flow from inside a checked-out repository.
+
+If you run it from a git repository, it can:
+
+1. detect the git root
+2. read the `origin` remote URL
+3. match that remote to a Dependency-Track project
+4. inspect findings and remediate in the current working tree
+
+Examples from inside a repo:
+
+```bash
+bun run src/cli.ts projects detect
+bun run src/cli.ts projects inspect
+bun run src/cli.ts findings list
+bun run src/cli.ts fix critical
+bun run src/cli.ts fix critical --apply
+```
+
+That means an agent can work naturally from the current project directory without first looking up a manually configured project key.
 
 ## Remediation Metadata
 
@@ -82,6 +106,11 @@ Exposed tools:
 - `dtrack_fix_finding`
 
 The MCP tools accept a Dependency-Track project name or UUID directly.
+
+They also support current-repo detection by repo path. For MCP-driven agents, the recommended flow is:
+
+1. call `dtrack_detect_project` with the current repo path
+2. call `dtrack_get_findings` or `dtrack_fix_critical` with that same repo path or the returned project identifier
 
 ## Agent Assets
 

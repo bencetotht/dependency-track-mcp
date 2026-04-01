@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 import { loadConfig } from "./lib/config.ts";
-import { inspectProject, listFindings, listProjects, remediateCritical } from "./lib/remediation.ts";
+import { detectProjectFromRepo, inspectProject, listFindings, listProjects, remediateCritical } from "./lib/remediation.ts";
 
 type JsonRpcId = string | number | null;
 type JsonRpcMessage = {
@@ -24,53 +24,65 @@ const toolDefinitions = [
   },
   {
     name: "dtrack_get_project",
-    description: "Inspect the latest Dependency-Track project for a project name or UUID.",
+    description: "Inspect the latest Dependency-Track project for a project name/UUID, or infer it from a repo path.",
     inputSchema: {
       type: "object",
       properties: {
         projectIdentifier: { type: "string" },
+        repoPath: { type: "string" },
       },
-      required: ["projectIdentifier"],
       additionalProperties: false,
     },
   },
   {
     name: "dtrack_get_findings",
-    description: "Get current findings for a Dependency-Track project name or UUID.",
+    description: "Get current findings for a Dependency-Track project name/UUID, or infer it from a repo path.",
     inputSchema: {
       type: "object",
       properties: {
         projectIdentifier: { type: "string" },
+        repoPath: { type: "string" },
         severity: { type: "string" },
       },
-      required: ["projectIdentifier"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "dtrack_detect_project",
+    description: "Detect the Dependency-Track project associated with a local git repository path.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        repoPath: { type: "string" },
+      },
       additionalProperties: false,
     },
   },
   {
     name: "dtrack_fix_critical",
-    description: "Remediate critical Dependency-Track findings for a Dependency-Track project name or UUID.",
+    description: "Remediate critical Dependency-Track findings for a Dependency-Track project name/UUID, or infer it from a repo path.",
     inputSchema: {
       type: "object",
       properties: {
         projectIdentifier: { type: "string" },
+        repoPath: { type: "string" },
         apply: { type: "boolean" },
       },
-      required: ["projectIdentifier"],
       additionalProperties: false,
     },
   },
   {
     name: "dtrack_fix_finding",
-    description: "Remediate a specific Dependency-Track finding id or matrix for a Dependency-Track project name or UUID.",
+    description: "Remediate a specific Dependency-Track finding id or matrix for a Dependency-Track project name/UUID, or infer it from a repo path.",
     inputSchema: {
       type: "object",
       properties: {
         projectIdentifier: { type: "string" },
+        repoPath: { type: "string" },
         findingId: { type: "string" },
         apply: { type: "boolean" },
       },
-      required: ["projectIdentifier", "findingId"],
+      required: ["findingId"],
       additionalProperties: false,
     },
   },
@@ -79,16 +91,18 @@ const toolDefinitions = [
 const promptDefinitions = [
   {
     name: "dtrack-triage",
-    description: "Inspect the latest critical Dependency-Track findings for a Dependency-Track project name or UUID.",
+    description: "Inspect the latest critical Dependency-Track findings for a Dependency-Track project name/UUID, or infer it from the current repo path.",
     arguments: [
-      { name: "projectIdentifier", description: "Dependency-Track project name or UUID", required: true },
+      { name: "projectIdentifier", description: "Dependency-Track project name or UUID", required: false },
+      { name: "repoPath", description: "Local repo path to match against Dependency-Track", required: false },
     ],
   },
   {
     name: "dtrack-fix-critical",
-    description: "Inspect and optionally remediate critical Dependency-Track findings for a Dependency-Track project name or UUID.",
+    description: "Inspect and optionally remediate critical Dependency-Track findings for a Dependency-Track project name/UUID, or infer it from the current repo path.",
     arguments: [
-      { name: "projectIdentifier", description: "Dependency-Track project name or UUID", required: true },
+      { name: "projectIdentifier", description: "Dependency-Track project name or UUID", required: false },
+      { name: "repoPath", description: "Local repo path to match against Dependency-Track", required: false },
       { name: "apply", description: "Use true to allow branch/PR creation", required: false },
     ],
   },
@@ -175,14 +189,16 @@ class StdioJsonRpcServer {
       switch (name) {
       case "dtrack_list_projects":
         return listProjects(config, args.query ? String(args.query) : undefined);
+      case "dtrack_detect_project":
+        return detectProjectFromRepo(config, args.repoPath ? String(args.repoPath) : undefined);
       case "dtrack_get_project":
-        return inspectProject(config, String(args.projectIdentifier));
+        return inspectProject(config, args.projectIdentifier ? String(args.projectIdentifier) : undefined, args.repoPath ? String(args.repoPath) : undefined);
       case "dtrack_get_findings":
-        return listFindings(config, String(args.projectIdentifier), String(args.severity || "CRITICAL").toUpperCase() as never);
+        return listFindings(config, args.projectIdentifier ? String(args.projectIdentifier) : undefined, String(args.severity || "CRITICAL").toUpperCase() as never, args.repoPath ? String(args.repoPath) : undefined);
       case "dtrack_fix_critical":
-        return remediateCritical(config, String(args.projectIdentifier), Boolean(args.apply));
+        return remediateCritical(config, args.projectIdentifier ? String(args.projectIdentifier) : undefined, Boolean(args.apply), args.repoPath ? String(args.repoPath) : undefined);
       case "dtrack_fix_finding":
-        return remediateCritical(config, String(args.projectIdentifier), Boolean(args.apply), String(args.findingId));
+        return remediateCritical(config, args.projectIdentifier ? String(args.projectIdentifier) : undefined, Boolean(args.apply), args.repoPath ? String(args.repoPath) : undefined, String(args.findingId));
       default:
         throw new Error(`Unsupported tool: ${name}`);
       }
@@ -192,6 +208,7 @@ class StdioJsonRpcServer {
     const name = String(params.name || "");
     const args = (params.arguments || {}) as Record<string, string | undefined>;
     if (name === "dtrack-triage") {
+      const target = args.projectIdentifier || args.repoPath || "<project-name-or-uuid-or-repo-path>";
       return {
         description: "Inspect the latest critical Dependency-Track findings for a Dependency-Track project name or UUID.",
         messages: [
@@ -200,7 +217,8 @@ class StdioJsonRpcServer {
             content: {
               type: "text",
               text: [
-                `Inspect Dependency-Track project '${args.projectIdentifier || "<project-name-or-uuid>"}'.`,
+                `Inspect Dependency-Track target '${target}'.`,
+                args.repoPath ? `Use repo path '${args.repoPath}' to detect the matching Dependency-Track project if needed.` : "If no project identifier is given, detect the project from the current repo path first.",
                 "Use the MCP tools to fetch the latest project state and current critical findings.",
                 "Return a concise summary of fixable critical findings, skipped items, and the most urgent next action.",
               ].join("\n"),
@@ -212,6 +230,7 @@ class StdioJsonRpcServer {
 
     if (name === "dtrack-fix-critical") {
       const apply = args.apply === "true";
+      const target = args.projectIdentifier || args.repoPath || "<project-name-or-uuid-or-repo-path>";
       return {
         description: "Inspect and remediate critical Dependency-Track findings for a Dependency-Track project name or UUID.",
         messages: [
@@ -220,7 +239,8 @@ class StdioJsonRpcServer {
             content: {
               type: "text",
               text: [
-                `Inspect Dependency-Track project '${args.projectIdentifier || "<project-name-or-uuid>"}'.`,
+                `Inspect Dependency-Track target '${target}'.`,
+                args.repoPath ? `Use repo path '${args.repoPath}' to detect the matching Dependency-Track project if needed.` : "If no project identifier is given, detect the project from the current repo path first.",
                 "Use the MCP tools to list critical findings and assess fixability.",
                 apply
                   ? "Proceed with remediation using apply=true, then report the branch and PR/MR URL."
