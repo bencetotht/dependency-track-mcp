@@ -1,7 +1,8 @@
 #!/usr/bin/env bun
 import { installAgentAssets } from "./lib/agent-assets.ts";
 import { loadConfig, parseArgs } from "./lib/config.ts";
-import { detectProjectFromRepo, inspectProject, listFindings, listProjects, remediateCritical } from "./lib/remediation.ts";
+import { detectProjectFromRepo, inspectProject, listFindings, listProjects } from "./lib/projects.ts";
+import type { InstallTarget } from "./lib/types.ts";
 import { printOutput } from "./lib/utils.ts";
 
 function usage(): string {
@@ -11,9 +12,7 @@ function usage(): string {
     "  dtrack-agent [--config path] [--json] projects detect [repo-path]",
     "  dtrack-agent [--config path] [--json] projects inspect [project-name-or-uuid]",
     "  dtrack-agent [--config path] [--json] findings list [project-name-or-uuid] [severity]",
-    "  dtrack-agent [--config path] [--json] fix critical [project-name-or-uuid] [--apply]",
-    "  dtrack-agent [--config path] [--json] fix finding [project-name-or-uuid] <finding-id> [--apply]",
-    "  dtrack-agent install-agent-assets [--force]",
+    "  dtrack-agent install-agent-assets [--force] [--codex] [--claude]",
   ].join("\n");
 }
 
@@ -27,7 +26,13 @@ async function main(): Promise<void> {
   }
 
   if (group === "install-agent-assets") {
-    const installed = await installAgentAssets(parsed.force);
+    const targets: InstallTarget[] = parsed.installCodex || parsed.installClaude
+      ? [
+        ...(parsed.installCodex ? ["codex" as const] : []),
+        ...(parsed.installClaude ? ["claude" as const] : []),
+      ]
+      : ["codex", "claude"];
+    const installed = await installAgentAssets(parsed.force, targets);
     printOutput(installed, parsed.json);
     return;
   }
@@ -53,18 +58,6 @@ async function main(): Promise<void> {
     const severity = (rest.length > 1 ? rest[1] : rest[0] && /^(critical|high|medium|low|unassigned)$/i.test(rest[0]) ? rest[0] : "CRITICAL").toUpperCase();
     const projectIdentifier = rest.length > 1 ? rest[0] : rest[0] && !/^(critical|high|medium|low|unassigned)$/i.test(rest[0]) ? rest[0] : undefined;
     printOutput(await listFindings(config, projectIdentifier, severity as never), parsed.json);
-    return;
-  }
-
-  if (group === "fix" && action === "critical") {
-    printOutput(await remediateCritical(config, rest[0], parsed.apply), parsed.json);
-    return;
-  }
-
-  if (group === "fix" && action === "finding") {
-    const projectIdentifier = rest.length > 1 ? rest[0] : undefined;
-    const findingId = rest.length > 1 ? rest[1] : rest[0];
-    printOutput(await remediateCritical(config, projectIdentifier, parsed.apply, undefined, findingId), parsed.json);
     return;
   }
 

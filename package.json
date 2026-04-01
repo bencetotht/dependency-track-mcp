@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "CLI and MCP toolkit for Dependency-Track remediation workflows",
+  "description": "CLI and MCP toolkit for querying Dependency-Track projects and findings from an agent",
   "bin": {
     "dtrack-agent": "dist/cli.js",
     "dtrack-agent-mcp": "dist/mcp-server.js"
@@ -15,4 +15,3 @@
     "test": "bun test"
   }
 }
-

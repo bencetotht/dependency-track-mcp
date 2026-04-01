@@ -1,6 +1,6 @@
 # Dependency-Track Triage
 
-Inspect the latest Dependency-Track findings for a configured project.
+Inspect the latest Dependency-Track findings for the current repo or an explicit Dependency-Track project.
 
 ## Usage
 
@@ -20,6 +20,8 @@ Inspect the latest Dependency-Track findings for a configured project.
    - or use the explicit project identifier when provided
 4. Return:
    - current Dependency-Track project/version
-   - fixable critical findings first
-   - skipped findings with reasons
-   - next recommended remediation action
+   - current critical findings first
+   - vulnerability identifiers, titles, descriptions, aliases, and recommendations
+   - enough context for the agent to do the fix work separately
+
+The toolkit is query-only. It does not edit code or create PRs/MRs.

@@ -1,4 +1,4 @@
-import type { DtrackFinding, DtrackProject, DtrackProjectProperty, FpfDocument, ProjectMapping, ResolvedProject, Severity, ToolkitConfig } from "./types.ts";
+import type { DtrackFinding, DtrackProject, DtrackProjectProperty, FpfDocument, Severity, ToolkitConfig } from "./types.ts";
 import { getDependencyTrackApiKey } from "./config.ts";
 import { fail, severityRank, sortByDateDesc } from "./utils.ts";
 
@@ -51,25 +51,15 @@ export class DependencyTrackClient {
     return latestFlag || sortByDateDesc(activeCandidates.length > 0 ? activeCandidates : candidates, (item) => item.lastBomImport || item.version)[0];
   }
 
-  async resolveProject(mapping: ProjectMapping): Promise<ResolvedProject> {
-    if (mapping.projectUuid) {
-      const project = await this.getProject(mapping.projectUuid);
-      return { mapping, project };
-    }
-
-    const project = await this.resolveProjectIdentifier(mapping.dependencyTrackName, mapping.classifier);
-    return { mapping, project };
-  }
-
-  async getFindings(mapping: ProjectMapping, minSeverity?: Severity): Promise<{ project: DtrackProject; findings: DtrackFinding[] }> {
-    const resolved = await this.resolveProject(mapping);
-    const exported = await this.exportFindings(resolved.project.uuid);
+  async getFindingsForProject(projectUuid: string, minSeverity?: Severity): Promise<{ project: DtrackProject; findings: DtrackFinding[] }> {
+    const project = await this.getProject(projectUuid);
+    const exported = await this.exportFindings(projectUuid);
     const findings = exported.findings
       .filter((finding) => !finding.analysis?.isSuppressed)
       .filter((finding) => !minSeverity || severityRank(finding.vulnerability.severity) >= severityRank(minSeverity))
       .sort((left, right) => severityRank(right.vulnerability.severity) - severityRank(left.vulnerability.severity));
     return {
-      project: resolved.project,
+      project,
       findings,
     };
   }

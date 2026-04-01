@@ -1,4 +1,0 @@
-display_name: Dependency-Track Remediator
-short_description: Inspect Dependency-Track findings and remediate critical Node dependencies with the local toolkit.
-default_prompt: Inspect the configured Dependency-Track project, summarize the latest critical fixable findings, and prepare a remediation run using the local dtrack-agent toolkit.
-
