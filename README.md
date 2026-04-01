@@ -23,6 +23,17 @@ The target workflow is:
 
 This repository only covers step 3.
 
+## Access Modes
+
+You can expose this toolkit to an agent in two ways:
+
+- CLI mode: the agent runs `bun run src/cli.ts ...`
+- MCP mode: the agent uses the stdio server in `src/mcp-server.ts`
+
+MCP is optional. The toolkit works in CLI-only mode.
+
+By default, the installed agent assets prefer MCP if the server is connected. If not, they fall back to the CLI.
+
 ## What This Repo Contains
 
 - `src/cli.ts`: read-only CLI for project lookup and findings retrieval
@@ -112,8 +123,60 @@ Removed in `0.2.0`:
 Run it over stdio:
 
 ```bash
-bun run src/mcp-server.ts
+bun run build
+bun dist/mcp-server.js
 ```
+
+MCP setup is optional. To use it with Codex, add this repository's MCP server to your local Codex configuration.
+
+Replace the example paths below with the absolute path to your own checkout of this repository.
+
+Example:
+
+```bash
+codex mcp add dtrack \
+  --env DTRACK_AGENT_CONFIG=/absolute/path/to/this-repo/dtrack-agent.config.json \
+  -- bun /absolute/path/to/this-repo/dist/mcp-server.js
+```
+
+If `DEPENDENCY_TRACK_API_KEY` is not already available in the Codex environment, add it explicitly:
+
+```bash
+codex mcp add dtrack \
+  --env DTRACK_AGENT_CONFIG=/absolute/path/to/this-repo/dtrack-agent.config.json \
+  --env DEPENDENCY_TRACK_API_KEY=your_api_key_here \
+  -- bun /absolute/path/to/this-repo/dist/mcp-server.js
+```
+
+Verify the server is registered:
+
+```bash
+codex mcp list
+codex mcp get dtrack
+```
+
+If Codex reports that the MCP server timed out during startup, add a longer startup timeout in `~/.codex/config.toml`:
+
+```toml
+[mcp_servers.dtrack]
+startup_timeout_sec = 30
+```
+
+Equivalent `~/.codex/config.toml` entry:
+
+```toml
+[mcp_servers.dtrack]
+command = "bun"
+args = ["/absolute/path/to/this-repo/dist/mcp-server.js"]
+startup_timeout_sec = 30
+
+[mcp_servers.dtrack.env]
+DTRACK_AGENT_CONFIG = "/absolute/path/to/this-repo/dtrack-agent.config.json"
+```
+
+The absolute `DTRACK_AGENT_CONFIG` path is recommended so the MCP server can always find the correct config file regardless of the working directory Codex uses when launching it.
+
+The MCP server uses the same `dtrack-agent.config.json` file and Dependency-Track API key environment variable as the CLI.
 
 Exposed tools:
 
@@ -131,6 +194,13 @@ Recommended MCP flow for an agent:
 1. `dtrack_detect_project` with the current repo path
 2. `dtrack_get_project` for the resolved project
 3. `dtrack_get_findings` with `severity=CRITICAL`
+
+If MCP is not configured, the agent can perform the same flow with the CLI instead.
+
+Default behavior of the installed agent assets:
+
+- use the `dtrack` MCP server first when it is connected
+- fall back to the local CLI when MCP is not available
 
 ## Agent Assets
 
