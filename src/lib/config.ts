@@ -14,7 +14,7 @@ export async function loadConfig(configPath?: string): Promise<ToolkitConfig> {
   const config = (await file.json()) as ToolkitConfig;
   validateConfig(config);
   config.workspaceRoot = expandHome(config.workspaceRoot);
-  config.projects = config.projects.map((project) => ({
+  config.projects = (config.projects || []).map((project) => ({
     ...project,
     localPath: project.localPath ? expandHome(project.localPath) : project.localPath,
   }));
@@ -28,22 +28,18 @@ function validateConfig(config: ToolkitConfig): void {
   if (!config.workspaceRoot) {
     fail("Config must define workspaceRoot.");
   }
-  if (!Array.isArray(config.projects) || config.projects.length === 0) {
-    fail("Config must define at least one project mapping.");
+  if (config.projects && !Array.isArray(config.projects)) {
+    fail("Config projects must be an array when provided.");
   }
 }
 
-export function findProjectMapping(config: ToolkitConfig, identifier: string): ProjectMapping {
+export function findProjectMapping(config: ToolkitConfig, identifier: string): ProjectMapping | undefined {
   const lowered = identifier.toLowerCase();
-  const match = config.projects.find((project) =>
+  return (config.projects || []).find((project) =>
     project.key.toLowerCase() === lowered ||
     project.dependencyTrackName.toLowerCase() === lowered ||
     (project.projectUuid || "").toLowerCase() === lowered,
   );
-  if (!match) {
-    fail(`Project mapping not found for '${identifier}'.`);
-  }
-  return match;
 }
 
 export function getProviderToken(config: ToolkitConfig, provider: "github" | "gitlab"): string | undefined {
@@ -93,4 +89,3 @@ export function parseArgs(argv: string[]): ParsedArgs {
 
   return { configPath, json, apply, force, command };
 }
-

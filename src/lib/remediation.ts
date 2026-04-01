@@ -1,10 +1,19 @@
-import { join } from "node:path";
 import { findProjectMapping } from "./config.ts";
 import { DependencyTrackClient } from "./dtrack.ts";
 import { commitAndPush, ensureRepository, hasChanges, prepareBranch } from "./git.ts";
 import { buildTestCommand, buildUpgradeCommand, detectPackageManager, findDependencyType, readPackageJson } from "./package-managers.ts";
 import { openPullRequestOrMr } from "./providers.ts";
-import type { DtrackFinding, RemediationOutcome, Severity, ToolkitConfig, ValidationStep } from "./types.ts";
+import type {
+  DtrackFinding,
+  DtrackProject,
+  DtrackProjectProperty,
+  ProjectMapping,
+  RemediationOutcome,
+  ResolvedProject,
+  Severity,
+  ToolkitConfig,
+  ValidationStep,
+} from "./types.ts";
 import { execCommand, fail, severityRank, slugify } from "./utils.ts";
 
 function normalizeSeverity(input?: string): Severity {
@@ -43,20 +52,223 @@ function groupFixableFindings(findings: DtrackFinding[], threshold: Severity, re
   });
 }
 
-export async function listProjects(config: ToolkitConfig): Promise<unknown[]> {
-  const client = new DependencyTrackClient(config);
-  return client.listProjects();
+function propertyLookup(properties: DtrackProjectProperty[]): Map<string, string> {
+  const map = new Map<string, string>();
+  for (const property of properties) {
+    const groupName = (property.groupName || "").trim();
+    const propertyName = (property.propertyName || "").trim();
+    const propertyValue = (property.propertyValue || "").trim();
+    if (!propertyName || !propertyValue) {
+      continue;
+    }
+    map.set(propertyName.toLowerCase(), propertyValue);
+    if (groupName) {
+      map.set(`${groupName}.${propertyName}`.toLowerCase(), propertyValue);
+    }
+  }
+  return map;
 }
 
-export async function inspectProject(config: ToolkitConfig, projectKey: string): Promise<unknown> {
-  const mapping = findProjectMapping(config, projectKey);
+function firstDefined(...values: Array<string | undefined>): string | undefined {
+  return values.find((value) => value && value.trim().length > 0);
+}
+
+function inferProviderFromCloneUrl(cloneUrl?: string): "github" | "gitlab" | undefined {
+  if (!cloneUrl) {
+    return undefined;
+  }
+  const lowered = cloneUrl.toLowerCase();
+  if (lowered.includes("github.com")) {
+    return "github";
+  }
+  if (lowered.includes("gitlab")) {
+    return "gitlab";
+  }
+  return undefined;
+}
+
+function inferCloneUrlFromProject(project: DtrackProject): string | undefined {
+  const ref = (project.externalReferences || []).find((item) => {
+    const type = (item.type || "").toUpperCase();
+    return type.includes("VCS") || type.includes("SCM") || type.includes("DISTRIBUTION");
+  }) || (project.externalReferences || []).find((item) => typeof item.url === "string" && item.url.includes("git"));
+  return ref?.url;
+}
+
+async function resolveProjectTarget(config: ToolkitConfig, identifier: string): Promise<{
+  resolved: ResolvedProject;
+  properties: DtrackProjectProperty[];
+}> {
   const client = new DependencyTrackClient(config);
-  const resolved = await client.resolveProject(mapping);
-  const findings = await client.getFindings(mapping, "LOW");
+  const override = findProjectMapping(config, identifier);
+  const project = override
+    ? (await client.resolveProject(override)).project
+    : await client.resolveProjectIdentifier(identifier);
+  const properties = await client.getProjectProperties(project.uuid);
   return {
-    mapping,
+    resolved: {
+      mapping: override,
+      project,
+    },
+    properties,
+  };
+}
+
+function buildRemediationMapping(
+  project: DtrackProject,
+  properties: DtrackProjectProperty[],
+  override?: ProjectMapping,
+): ProjectMapping {
+  const lookup = propertyLookup(properties);
+  const cloneUrl = firstDefined(
+    override?.cloneUrl,
+    lookup.get("automation.cloneurl"),
+    lookup.get("automation.repourl"),
+    lookup.get("automation.repositoryurl"),
+    lookup.get("repo.cloneurl"),
+    lookup.get("repo.repositoryurl"),
+    lookup.get("vcs.cloneurl"),
+    lookup.get("vcs.repositoryurl"),
+    lookup.get("cloneurl"),
+    lookup.get("repositoryurl"),
+    inferCloneUrlFromProject(project),
+  );
+  const provider = (firstDefined(
+    override?.provider,
+    lookup.get("automation.provider"),
+    lookup.get("repo.provider"),
+    lookup.get("vcs.provider"),
+    lookup.get("provider"),
+    inferProviderFromCloneUrl(cloneUrl),
+  ) || "") as ProjectMapping["provider"];
+  const defaultBranch = firstDefined(
+    override?.defaultBranch,
+    lookup.get("automation.defaultbranch"),
+    lookup.get("repo.defaultbranch"),
+    lookup.get("vcs.defaultbranch"),
+    lookup.get("defaultbranch"),
+    "main",
+  )!;
+  const localPath = firstDefined(
+    override?.localPath,
+    lookup.get("automation.localpath"),
+    lookup.get("repo.localpath"),
+    lookup.get("vcs.localpath"),
+    lookup.get("localpath"),
+  );
+
+  if (!cloneUrl) {
+    fail([
+      `No repository clone URL is available for Dependency-Track project '${project.name}'.`,
+      "Set one of these project properties in Dependency-Track:",
+      "- automation.cloneUrl",
+      "- automation.repositoryUrl",
+      "- repo.cloneUrl",
+      "Or add a local override in dtrack-agent.config.json.",
+    ].join("\n"));
+  }
+
+  if (provider !== "github" && provider !== "gitlab") {
+    fail([
+      `No supported VCS provider is available for Dependency-Track project '${project.name}'.`,
+      "Set automation.provider to 'github' or 'gitlab' in Dependency-Track project properties,",
+      "or add a local override in dtrack-agent.config.json.",
+    ].join("\n"));
+  }
+
+  return {
+    key: override?.key || project.name,
+    dependencyTrackName: override?.dependencyTrackName || project.name,
+    projectUuid: project.uuid,
+    imageProjectUuid: override?.imageProjectUuid,
+    classifier: override?.classifier || project.classifier,
+    provider,
+    cloneUrl,
+    defaultBranch,
+    localPath,
+  };
+}
+
+export async function listProjects(config: ToolkitConfig, query?: string): Promise<unknown[]> {
+  const client = new DependencyTrackClient(config);
+  const projects = await client.listProjects();
+  const loweredQuery = query?.toLowerCase().trim();
+  const grouped = new Map<string, DtrackProject>();
+  for (const project of projects) {
+    const groupKey = `${project.name.toLowerCase()}::${(project.classifier || "").toLowerCase()}`;
+    const existing = grouped.get(groupKey);
+    if (!existing) {
+      grouped.set(groupKey, project);
+      continue;
+    }
+    if (project.latestVersion === true && existing.latestVersion !== true) {
+      grouped.set(groupKey, project);
+      continue;
+    }
+    const existingTs = existing.lastBomImport ? new Date(existing.lastBomImport).getTime() : 0;
+    const projectTs = project.lastBomImport ? new Date(project.lastBomImport).getTime() : 0;
+    if (projectTs > existingTs) {
+      grouped.set(groupKey, project);
+    }
+  }
+
+  return [...grouped.values()]
+    .filter((project) => !loweredQuery ||
+      project.name.toLowerCase().includes(loweredQuery) ||
+      project.uuid.toLowerCase().includes(loweredQuery))
+    .sort((left, right) => left.name.localeCompare(right.name) || String(right.lastBomImport || "").localeCompare(String(left.lastBomImport || "")))
+    .map((project) => ({
+      uuid: project.uuid,
+      name: project.name,
+      version: project.version,
+      classifier: project.classifier,
+      active: project.active,
+      latestVersion: project.latestVersion,
+      lastBomImport: project.lastBomImport,
+    }));
+}
+
+export async function inspectProject(config: ToolkitConfig, identifier: string): Promise<unknown> {
+  const { resolved, properties } = await resolveProjectTarget(config, identifier);
+  const client = new DependencyTrackClient(config);
+  const { findings } = await client.getFindings(
+    resolved.mapping || {
+      key: resolved.project.name,
+      dependencyTrackName: resolved.project.name,
+      projectUuid: resolved.project.uuid,
+      provider: "github",
+      cloneUrl: "https://example.invalid/placeholder.git",
+      defaultBranch: "main",
+    },
+    "LOW",
+  );
+
+  let remediation: Record<string, unknown>;
+  try {
+    const mapping = buildRemediationMapping(resolved.project, properties, resolved.mapping);
+    remediation = {
+      ready: true,
+      provider: mapping.provider,
+      cloneUrl: mapping.cloneUrl,
+      defaultBranch: mapping.defaultBranch,
+      localPath: mapping.localPath || null,
+    };
+  } catch (error) {
+    remediation = {
+      ready: false,
+      reason: error instanceof Error ? error.message : String(error),
+    };
+  }
+
+  return {
     project: resolved.project,
-    totals: findings.findings.reduce<Record<string, number>>((acc, finding) => {
+    remediation,
+    properties: properties.map((item) => ({
+      groupName: item.groupName,
+      propertyName: item.propertyName,
+      propertyValue: item.propertyValue,
+    })),
+    totals: findings.reduce<Record<string, number>>((acc, finding) => {
       const severity = normalizeSeverity(finding.vulnerability.severity);
       acc[severity] = (acc[severity] || 0) + 1;
       return acc;
@@ -64,10 +276,20 @@ export async function inspectProject(config: ToolkitConfig, projectKey: string):
   };
 }
 
-export async function listFindings(config: ToolkitConfig, projectKey: string, severity: Severity = "CRITICAL"): Promise<unknown> {
-  const mapping = findProjectMapping(config, projectKey);
+export async function listFindings(config: ToolkitConfig, identifier: string, severity: Severity = "CRITICAL"): Promise<unknown> {
+  const { resolved } = await resolveProjectTarget(config, identifier);
   const client = new DependencyTrackClient(config);
-  const { project, findings } = await client.getFindings(mapping, severity);
+  const { project, findings } = await client.getFindings(
+    resolved.mapping || {
+      key: resolved.project.name,
+      dependencyTrackName: resolved.project.name,
+      projectUuid: resolved.project.uuid,
+      provider: "github",
+      cloneUrl: "https://example.invalid/placeholder.git",
+      defaultBranch: "main",
+    },
+    severity,
+  );
   return {
     project,
     findings: findings.map((finding) => ({
@@ -141,11 +363,12 @@ async function maybeRunTrivy(repoPath: string): Promise<ValidationStep> {
 
 export async function remediateCritical(
   config: ToolkitConfig,
-  projectKey: string,
+  identifier: string,
   apply: boolean,
   findingId?: string,
 ): Promise<RemediationOutcome> {
-  const mapping = findProjectMapping(config, projectKey);
+  const { resolved, properties } = await resolveProjectTarget(config, identifier);
+  const mapping = buildRemediationMapping(resolved.project, properties, resolved.mapping);
   const client = new DependencyTrackClient(config);
   const { project, findings } = await client.getFindings(mapping, config.remediation?.severity || "CRITICAL");
   const candidateFindings = groupFixableFindings(findings, config.remediation?.severity || "CRITICAL", findingId)
@@ -282,4 +505,3 @@ export async function remediateCritical(
     validations,
   };
 }
-

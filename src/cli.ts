@@ -7,11 +7,11 @@ import { printOutput } from "./lib/utils.ts";
 function usage(): string {
   return [
     "Usage:",
-    "  dtrack-agent [--config path] [--json] projects list",
-    "  dtrack-agent [--config path] [--json] projects inspect <project>",
-    "  dtrack-agent [--config path] [--json] findings list <project> [severity]",
-    "  dtrack-agent [--config path] [--json] fix critical <project> [--apply]",
-    "  dtrack-agent [--config path] [--json] fix finding <project> <finding-id> [--apply]",
+    "  dtrack-agent [--config path] [--json] projects list [query]",
+    "  dtrack-agent [--config path] [--json] projects inspect <project-name-or-uuid>",
+    "  dtrack-agent [--config path] [--json] findings list <project-name-or-uuid> [severity]",
+    "  dtrack-agent [--config path] [--json] fix critical <project-name-or-uuid> [--apply]",
+    "  dtrack-agent [--config path] [--json] fix finding <project-name-or-uuid> <finding-id> [--apply]",
     "  dtrack-agent install-agent-assets [--force]",
   ].join("\n");
 }
@@ -34,7 +34,7 @@ async function main(): Promise<void> {
   const config = await loadConfig(parsed.configPath);
 
   if (group === "projects" && action === "list") {
-    printOutput(await listProjects(config), parsed.json);
+    printOutput(await listProjects(config, rest[0]), parsed.json);
     return;
   }
 
@@ -65,4 +65,3 @@ main().catch((error) => {
   console.error(error instanceof Error ? error.message : String(error));
   process.exit(1);
 });
-

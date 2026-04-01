@@ -4,22 +4,21 @@ Inspect and remediate critical Dependency-Track findings for a configured projec
 
 ## Usage
 
-`/dtrack-fix-critical <projectKey>`
+`/dtrack-fix-critical <project-name-or-uuid>`
 
 ## Workflow
 
 1. Inspect the latest critical findings first.
 2. Start with a dry run:
    - MCP: `dtrack_fix_critical` with `apply=false`
-   - CLI: `bun run src/cli.ts fix critical <projectKey>`
+   - CLI: `bun run src/cli.ts fix critical <project-name-or-uuid>`
 3. Summarize what will change.
 4. If the user wants execution, run:
    - MCP: `dtrack_fix_critical` with `apply=true`
-   - CLI: `bun run src/cli.ts fix critical <projectKey> --apply`
+   - CLI: `bun run src/cli.ts fix critical <project-name-or-uuid> --apply`
 5. Report:
    - updated packages
    - validations
    - branch name
    - PR/MR URL
    - skipped findings
-

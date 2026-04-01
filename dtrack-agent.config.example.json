@@ -21,24 +21,10 @@
       "key": "simplemailer",
       "dependencyTrackName": "simplemailer",
       "projectUuid": "",
-      "classifier": "APPLICATION",
       "provider": "github",
       "cloneUrl": "https://github.com/example/simplemailer.git",
       "defaultBranch": "main",
-      "localPath": "",
-      "imageProjectUuid": ""
-    },
-    {
-      "key": "vulnerability-monitoring",
-      "dependencyTrackName": "vulnerability-monitoring",
-      "projectUuid": "",
-      "classifier": "APPLICATION",
-      "provider": "gitlab",
-      "cloneUrl": "https://gitlab.example.com/security/vulnerability-monitoring.git",
-      "defaultBranch": "main",
-      "localPath": "",
-      "imageProjectUuid": ""
+      "localPath": ""
     }
   ]
 }
-

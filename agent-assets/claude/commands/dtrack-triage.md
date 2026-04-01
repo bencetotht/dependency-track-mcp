@@ -4,7 +4,7 @@ Inspect the latest Dependency-Track findings for a configured project.
 
 ## Usage
 
-`/dtrack-triage <projectKey>`
+`/dtrack-triage <project-name-or-uuid>`
 
 ## Workflow
 
@@ -12,11 +12,10 @@ Inspect the latest Dependency-Track findings for a configured project.
    - `dtrack_get_project`
    - `dtrack_get_findings`
 2. Otherwise use the local CLI:
-   - `bun run src/cli.ts projects inspect <projectKey>`
-   - `bun run src/cli.ts findings list <projectKey> CRITICAL`
+   - `bun run src/cli.ts projects inspect <project-name-or-uuid>`
+   - `bun run src/cli.ts findings list <project-name-or-uuid> CRITICAL`
 3. Return:
    - current Dependency-Track project/version
    - fixable critical findings first
    - skipped findings with reasons
    - next recommended remediation action
-

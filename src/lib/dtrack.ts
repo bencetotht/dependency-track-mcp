@@ -1,4 +1,4 @@
-import type { DtrackFinding, DtrackProject, FpfDocument, ProjectMapping, ResolvedProject, Severity, ToolkitConfig } from "./types.ts";
+import type { DtrackFinding, DtrackProject, DtrackProjectProperty, FpfDocument, ProjectMapping, ResolvedProject, Severity, ToolkitConfig } from "./types.ts";
 import { getDependencyTrackApiKey } from "./config.ts";
 import { fail, severityRank, sortByDateDesc } from "./utils.ts";
 
@@ -19,8 +19,36 @@ export class DependencyTrackClient {
     return this.requestJson<DtrackProject>("GET", `/api/v1/project/${projectUuid}`);
   }
 
+  async getProjectProperties(projectUuid: string): Promise<DtrackProjectProperty[]> {
+    return this.requestJson<DtrackProjectProperty[]>("GET", `/api/v1/project/${projectUuid}/property`);
+  }
+
   async exportFindings(projectUuid: string): Promise<FpfDocument> {
     return this.requestJson<FpfDocument>("GET", `/api/v1/finding/project/${projectUuid}/export`);
+  }
+
+  async resolveProjectIdentifier(identifier: string, classifier?: string): Promise<DtrackProject> {
+    const projects = await this.listProjects();
+    const lowered = identifier.toLowerCase();
+    const candidates = projects.filter((project) =>
+      project.uuid.toLowerCase() === lowered ||
+      project.name.toLowerCase() === lowered,
+    ).filter((project) =>
+      !classifier || (project.classifier || "").toUpperCase() === classifier.toUpperCase(),
+    );
+
+    if (candidates.length === 0) {
+      fail(`No Dependency-Track project found for identifier '${identifier}'.`);
+    }
+
+    const exactUuid = candidates.find((project) => project.uuid.toLowerCase() === lowered);
+    if (exactUuid) {
+      return exactUuid;
+    }
+
+    const latestFlag = candidates.find((project) => project.latestVersion === true);
+    const activeCandidates = candidates.filter((project) => project.active !== false);
+    return latestFlag || sortByDateDesc(activeCandidates.length > 0 ? activeCandidates : candidates, (item) => item.lastBomImport || item.version)[0];
   }
 
   async resolveProject(mapping: ProjectMapping): Promise<ResolvedProject> {
@@ -29,17 +57,7 @@ export class DependencyTrackClient {
       return { mapping, project };
     }
 
-    const projects = await this.listProjects();
-    const candidates = projects.filter((project) =>
-      project.name === mapping.dependencyTrackName &&
-      (!mapping.classifier || (project.classifier || "").toUpperCase() === mapping.classifier.toUpperCase()),
-    );
-    if (candidates.length === 0) {
-      fail(`No Dependency-Track project found for '${mapping.dependencyTrackName}'.`);
-    }
-
-    const latestFlag = candidates.find((project) => project.latestVersion === true);
-    const project = latestFlag || sortByDateDesc(candidates, (item) => item.lastBomImport || item.version)[0];
+    const project = await this.resolveProjectIdentifier(mapping.dependencyTrackName, mapping.classifier);
     return { mapping, project };
   }
 
@@ -71,4 +89,3 @@ export class DependencyTrackClient {
     return (await response.json()) as T;
   }
 }
-

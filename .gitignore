@@ -1,3 +1,5 @@
 dist/
 .dtrack-agent/
 
+dtrack-agent.config.json
+.envrc

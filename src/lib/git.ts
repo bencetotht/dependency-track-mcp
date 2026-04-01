@@ -1,4 +1,5 @@
 import { basename, join } from "node:path";
+import { stat } from "node:fs/promises";
 import type { ProjectMapping, ToolkitConfig } from "./types.ts";
 import { getProviderToken } from "./config.ts";
 import { ensureDir, execCommand, expandHome, fail, slugify } from "./utils.ts";
@@ -24,6 +25,16 @@ export async function ensureRepository(config: ToolkitConfig, mapping: ProjectMa
 
   const targetDir = join(expandHome(config.workspaceRoot), mapping.key || getRepoFolderName(mapping.cloneUrl));
   await ensureDir(expandHome(config.workspaceRoot));
+
+  try {
+    const gitStat = await stat(join(targetDir, ".git"));
+    if (gitStat.isDirectory()) {
+      await execCommand(["git", "fetch", "--all"], { cwd: targetDir });
+      return targetDir;
+    }
+  } catch {
+    // Fall through to clone when the repo does not exist yet.
+  }
 
   if (await Bun.file(join(targetDir, ".git")).exists()) {
     await execCommand(["git", "fetch", "--all"], { cwd: targetDir });
@@ -65,4 +76,3 @@ export async function commitAndPush(
   await execCommand(["git", "remote", "set-url", "origin", remoteUrl], { cwd: repoPath });
   await execCommand(["git", "push", "--set-upstream", "origin", branchName], { cwd: repoPath });
 }
-

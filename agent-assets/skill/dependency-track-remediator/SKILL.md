@@ -9,13 +9,13 @@ Use this skill when the task is to inspect Dependency-Track data and remediate c
 
 ## Workflow
 
-1. Resolve the project key from `dtrack-agent.config.json`.
+1. Use the Dependency-Track project name or UUID directly.
 2. Prefer the MCP tools if the MCP server is connected.
 3. Otherwise use the CLI:
-   - `bun run src/cli.ts projects inspect <project>`
-   - `bun run src/cli.ts findings list <project> CRITICAL`
-   - `bun run src/cli.ts fix critical <project>` for dry run
-   - `bun run src/cli.ts fix critical <project> --apply` to create the branch and PR/MR
+   - `bun run src/cli.ts projects inspect <project-name-or-uuid>`
+   - `bun run src/cli.ts findings list <project-name-or-uuid> CRITICAL`
+   - `bun run src/cli.ts fix critical <project-name-or-uuid>` for dry run
+   - `bun run src/cli.ts fix critical <project-name-or-uuid> --apply` to create the branch and PR/MR
 4. Summarize:
    - latest Dependency-Track project version
    - critical fixable findings
@@ -25,9 +25,14 @@ Use this skill when the task is to inspect Dependency-Track data and remediate c
 
 ## Guardrails
 
-- Do not assume the Dependency-Track project name equals the repo slug; use the configured mapping.
+- Do not assume the Dependency-Track project name equals the repo slug.
+- For remediation, prefer repo metadata stored on the Dependency-Track project as properties:
+  - `automation.provider`
+  - `automation.cloneUrl`
+  - `automation.defaultBranch`
+  - `automation.localPath`
+- Use local config project overrides only when Dependency-Track project properties are missing or intentionally overridden.
 - Only auto-remediate supported Node package managers in v1: `bun`, `npm`, `pnpm`, `yarn`.
 - Treat dry-run as the default safe mode unless the user clearly asked to apply the fix.
 - Report skipped findings explicitly when the package is transitive-only or has no fix version.
 - Never merge automatically.
-

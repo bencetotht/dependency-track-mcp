@@ -33,7 +33,7 @@ export interface ToolkitConfig {
     maxFindingsPerRun?: number;
     severity?: Severity;
   };
-  projects: ProjectMapping[];
+  projects?: ProjectMapping[];
 }
 
 export interface DtrackProject {
@@ -45,6 +45,18 @@ export interface DtrackProject {
   latestVersion?: boolean;
   lastBomImport?: number | string | null;
   metrics?: Record<string, unknown>;
+  tags?: Array<{ name?: string }>;
+  externalReferences?: Array<{
+    type?: string;
+    url?: string;
+    comment?: string;
+  }>;
+}
+
+export interface DtrackProjectProperty {
+  groupName?: string;
+  propertyName?: string;
+  propertyValue?: string;
 }
 
 export interface DtrackFinding {
@@ -83,7 +95,7 @@ export interface FpfDocument {
 }
 
 export interface ResolvedProject {
-  mapping: ProjectMapping;
+  mapping?: ProjectMapping;
   project: DtrackProject;
 }
 
@@ -123,4 +135,3 @@ export interface ParsedArgs {
   force: boolean;
   command: string[];
 }
-

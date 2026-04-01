@@ -16,59 +16,61 @@ const toolDefinitions = [
     description: "List Dependency-Track projects visible to the configured API key.",
     inputSchema: {
       type: "object",
-      properties: {},
+      properties: {
+        query: { type: "string" },
+      },
       additionalProperties: false,
     },
   },
   {
     name: "dtrack_get_project",
-    description: "Inspect the latest Dependency-Track project for a configured project key.",
+    description: "Inspect the latest Dependency-Track project for a project name or UUID.",
     inputSchema: {
       type: "object",
       properties: {
-        projectKey: { type: "string" },
+        projectIdentifier: { type: "string" },
       },
-      required: ["projectKey"],
+      required: ["projectIdentifier"],
       additionalProperties: false,
     },
   },
   {
     name: "dtrack_get_findings",
-    description: "Get current findings for a configured project key.",
+    description: "Get current findings for a Dependency-Track project name or UUID.",
     inputSchema: {
       type: "object",
       properties: {
-        projectKey: { type: "string" },
+        projectIdentifier: { type: "string" },
         severity: { type: "string" },
       },
-      required: ["projectKey"],
+      required: ["projectIdentifier"],
       additionalProperties: false,
     },
   },
   {
     name: "dtrack_fix_critical",
-    description: "Remediate critical Dependency-Track findings for a configured project key.",
+    description: "Remediate critical Dependency-Track findings for a Dependency-Track project name or UUID.",
     inputSchema: {
       type: "object",
       properties: {
-        projectKey: { type: "string" },
+        projectIdentifier: { type: "string" },
         apply: { type: "boolean" },
       },
-      required: ["projectKey"],
+      required: ["projectIdentifier"],
       additionalProperties: false,
     },
   },
   {
     name: "dtrack_fix_finding",
-    description: "Remediate a specific Dependency-Track finding id or matrix for a configured project key.",
+    description: "Remediate a specific Dependency-Track finding id or matrix for a Dependency-Track project name or UUID.",
     inputSchema: {
       type: "object",
       properties: {
-        projectKey: { type: "string" },
+        projectIdentifier: { type: "string" },
         findingId: { type: "string" },
         apply: { type: "boolean" },
       },
-      required: ["projectKey", "findingId"],
+      required: ["projectIdentifier", "findingId"],
       additionalProperties: false,
     },
   },
@@ -77,16 +79,16 @@ const toolDefinitions = [
 const promptDefinitions = [
   {
     name: "dtrack-triage",
-    description: "Inspect the latest critical Dependency-Track findings for a configured project key.",
+    description: "Inspect the latest critical Dependency-Track findings for a Dependency-Track project name or UUID.",
     arguments: [
-      { name: "projectKey", description: "Configured project key", required: true },
+      { name: "projectIdentifier", description: "Dependency-Track project name or UUID", required: true },
     ],
   },
   {
     name: "dtrack-fix-critical",
-    description: "Inspect and optionally remediate critical Dependency-Track findings for a configured project key.",
+    description: "Inspect and optionally remediate critical Dependency-Track findings for a Dependency-Track project name or UUID.",
     arguments: [
-      { name: "projectKey", description: "Configured project key", required: true },
+      { name: "projectIdentifier", description: "Dependency-Track project name or UUID", required: true },
       { name: "apply", description: "Use true to allow branch/PR creation", required: false },
     ],
   },
@@ -168,22 +170,22 @@ class StdioJsonRpcServer {
   }
 
   private async callTool(config: Awaited<ReturnType<typeof loadConfig>>, params: Record<string, unknown>): Promise<unknown> {
-    const name = String(params.name || "");
-    const args = (params.arguments || {}) as Record<string, unknown>;
-    switch (name) {
+      const name = String(params.name || "");
+      const args = (params.arguments || {}) as Record<string, unknown>;
+      switch (name) {
       case "dtrack_list_projects":
-        return listProjects(config);
+        return listProjects(config, args.query ? String(args.query) : undefined);
       case "dtrack_get_project":
-        return inspectProject(config, String(args.projectKey));
+        return inspectProject(config, String(args.projectIdentifier));
       case "dtrack_get_findings":
-        return listFindings(config, String(args.projectKey), String(args.severity || "CRITICAL").toUpperCase() as never);
+        return listFindings(config, String(args.projectIdentifier), String(args.severity || "CRITICAL").toUpperCase() as never);
       case "dtrack_fix_critical":
-        return remediateCritical(config, String(args.projectKey), Boolean(args.apply));
+        return remediateCritical(config, String(args.projectIdentifier), Boolean(args.apply));
       case "dtrack_fix_finding":
-        return remediateCritical(config, String(args.projectKey), Boolean(args.apply), String(args.findingId));
+        return remediateCritical(config, String(args.projectIdentifier), Boolean(args.apply), String(args.findingId));
       default:
         throw new Error(`Unsupported tool: ${name}`);
-    }
+      }
   }
 
   private async getPrompt(params: Record<string, unknown>): Promise<unknown> {
@@ -191,14 +193,14 @@ class StdioJsonRpcServer {
     const args = (params.arguments || {}) as Record<string, string | undefined>;
     if (name === "dtrack-triage") {
       return {
-        description: "Inspect the latest critical Dependency-Track findings for a configured project key.",
+        description: "Inspect the latest critical Dependency-Track findings for a Dependency-Track project name or UUID.",
         messages: [
           {
             role: "user",
             content: {
               type: "text",
               text: [
-                `Inspect Dependency-Track project '${args.projectKey || "<projectKey>"}'.`,
+                `Inspect Dependency-Track project '${args.projectIdentifier || "<project-name-or-uuid>"}'.`,
                 "Use the MCP tools to fetch the latest project state and current critical findings.",
                 "Return a concise summary of fixable critical findings, skipped items, and the most urgent next action.",
               ].join("\n"),
@@ -211,14 +213,14 @@ class StdioJsonRpcServer {
     if (name === "dtrack-fix-critical") {
       const apply = args.apply === "true";
       return {
-        description: "Inspect and remediate critical Dependency-Track findings for a configured project key.",
+        description: "Inspect and remediate critical Dependency-Track findings for a Dependency-Track project name or UUID.",
         messages: [
           {
             role: "user",
             content: {
               type: "text",
               text: [
-                `Inspect Dependency-Track project '${args.projectKey || "<projectKey>"}'.`,
+                `Inspect Dependency-Track project '${args.projectIdentifier || "<project-name-or-uuid>"}'.`,
                 "Use the MCP tools to list critical findings and assess fixability.",
                 apply
                   ? "Proceed with remediation using apply=true, then report the branch and PR/MR URL."
@@ -255,4 +257,3 @@ class StdioJsonRpcServer {
 }
 
 new StdioJsonRpcServer().start();
-
