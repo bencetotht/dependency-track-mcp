@@ -1,0 +1,3 @@
+display_name: Dependency-Track Query
+short_description: Identify the current repo in Dependency-Track and retrieve the latest vulnerability findings with the local toolkit.
+default_prompt: Inspect the matching Dependency-Track project for this repository, summarize the latest critical findings with CVE details, and then continue remediation using normal coding and git workflows outside the toolkit.

@@ -1,17 +1,12 @@
 export type Severity = "CRITICAL" | "HIGH" | "MEDIUM" | "LOW" | "UNASSIGNED";
-export type Provider = "github" | "gitlab";
-export type PackageManager = "bun" | "npm" | "pnpm" | "yarn";
+export type InstallTarget = "codex" | "claude";
 
 export interface ProjectMapping {
   key: string;
   dependencyTrackName: string;
   projectUuid?: string;
-  imageProjectUuid?: string;
   classifier?: string;
-  provider: Provider;
-  cloneUrl: string;
-  defaultBranch: string;
-  localPath?: string;
+  cloneUrl?: string;
 }
 
 export interface ToolkitConfig {
@@ -19,21 +14,7 @@ export interface ToolkitConfig {
     url: string;
     apiKeyEnv: string;
   };
-  workspaceRoot: string;
-  github?: {
-    tokenEnv: string;
-    apiBaseUrl?: string;
-  };
-  gitlab?: {
-    tokenEnv: string;
-    apiBaseUrl?: string;
-  };
-  remediation?: {
-    branchPrefix?: string;
-    maxFindingsPerRun?: number;
-    severity?: Severity;
-  };
-  projects: ProjectMapping[];
+  projects?: ProjectMapping[];
 }
 
 export interface DtrackProject {
@@ -45,6 +26,18 @@ export interface DtrackProject {
   latestVersion?: boolean;
   lastBomImport?: number | string | null;
   metrics?: Record<string, unknown>;
+  tags?: Array<{ name?: string }>;
+  externalReferences?: Array<{
+    type?: string;
+    url?: string;
+    comment?: string;
+  }>;
+}
+
+export interface DtrackProjectProperty {
+  groupName?: string;
+  propertyName?: string;
+  propertyValue?: string;
 }
 
 export interface DtrackFinding {
@@ -82,45 +75,11 @@ export interface FpfDocument {
   findings: DtrackFinding[];
 }
 
-export interface ResolvedProject {
-  mapping: ProjectMapping;
-  project: DtrackProject;
-}
-
-export interface ValidationStep {
-  name: string;
-  status: "passed" | "failed" | "skipped";
-  detail: string;
-}
-
-export interface RemediationOutcome {
-  mode: "dry-run" | "apply";
-  projectKey: string;
-  projectUuid: string;
-  projectVersion: string;
-  repoPath: string;
-  branchName?: string;
-  prUrl?: string;
-  mrUrl?: string;
-  updatedPackages: Array<{
-    name: string;
-    fromVersion: string;
-    toVersion: string;
-    dependencyType: string;
-    vulnerabilityIds: string[];
-  }>;
-  skippedFindings: Array<{
-    findingId: string;
-    reason: string;
-  }>;
-  validations: ValidationStep[];
-}
-
 export interface ParsedArgs {
   configPath?: string;
   json: boolean;
-  apply: boolean;
   force: boolean;
+  installCodex: boolean;
+  installClaude: boolean;
   command: string[];
 }
-

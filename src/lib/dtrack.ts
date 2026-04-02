@@ -1,4 +1,4 @@
-import type { DtrackFinding, DtrackProject, FpfDocument, ProjectMapping, ResolvedProject, Severity, ToolkitConfig } from "./types.ts";
+import type { DtrackFinding, DtrackProject, DtrackProjectProperty, FpfDocument, Severity, ToolkitConfig } from "./types.ts";
 import { getDependencyTrackApiKey } from "./config.ts";
 import { fail, severityRank, sortByDateDesc } from "./utils.ts";
 
@@ -19,39 +19,47 @@ export class DependencyTrackClient {
     return this.requestJson<DtrackProject>("GET", `/api/v1/project/${projectUuid}`);
   }
 
+  async getProjectProperties(projectUuid: string): Promise<DtrackProjectProperty[]> {
+    return this.requestJson<DtrackProjectProperty[]>("GET", `/api/v1/project/${projectUuid}/property`);
+  }
+
   async exportFindings(projectUuid: string): Promise<FpfDocument> {
     return this.requestJson<FpfDocument>("GET", `/api/v1/finding/project/${projectUuid}/export`);
   }
 
-  async resolveProject(mapping: ProjectMapping): Promise<ResolvedProject> {
-    if (mapping.projectUuid) {
-      const project = await this.getProject(mapping.projectUuid);
-      return { mapping, project };
+  async resolveProjectIdentifier(identifier: string, classifier?: string): Promise<DtrackProject> {
+    const projects = await this.listProjects();
+    const lowered = identifier.toLowerCase();
+    const candidates = projects.filter((project) =>
+      project.uuid.toLowerCase() === lowered ||
+      project.name.toLowerCase() === lowered,
+    ).filter((project) =>
+      !classifier || (project.classifier || "").toUpperCase() === classifier.toUpperCase(),
+    );
+
+    if (candidates.length === 0) {
+      fail(`No Dependency-Track project found for identifier '${identifier}'.`);
     }
 
-    const projects = await this.listProjects();
-    const candidates = projects.filter((project) =>
-      project.name === mapping.dependencyTrackName &&
-      (!mapping.classifier || (project.classifier || "").toUpperCase() === mapping.classifier.toUpperCase()),
-    );
-    if (candidates.length === 0) {
-      fail(`No Dependency-Track project found for '${mapping.dependencyTrackName}'.`);
+    const exactUuid = candidates.find((project) => project.uuid.toLowerCase() === lowered);
+    if (exactUuid) {
+      return exactUuid;
     }
 
     const latestFlag = candidates.find((project) => project.latestVersion === true);
-    const project = latestFlag || sortByDateDesc(candidates, (item) => item.lastBomImport || item.version)[0];
-    return { mapping, project };
+    const activeCandidates = candidates.filter((project) => project.active !== false);
+    return latestFlag || sortByDateDesc(activeCandidates.length > 0 ? activeCandidates : candidates, (item) => item.lastBomImport || item.version)[0];
   }
 
-  async getFindings(mapping: ProjectMapping, minSeverity?: Severity): Promise<{ project: DtrackProject; findings: DtrackFinding[] }> {
-    const resolved = await this.resolveProject(mapping);
-    const exported = await this.exportFindings(resolved.project.uuid);
+  async getFindingsForProject(projectUuid: string, minSeverity?: Severity): Promise<{ project: DtrackProject; findings: DtrackFinding[] }> {
+    const project = await this.getProject(projectUuid);
+    const exported = await this.exportFindings(projectUuid);
     const findings = exported.findings
       .filter((finding) => !finding.analysis?.isSuppressed)
       .filter((finding) => !minSeverity || severityRank(finding.vulnerability.severity) >= severityRank(minSeverity))
       .sort((left, right) => severityRank(right.vulnerability.severity) - severityRank(left.vulnerability.severity));
     return {
-      project: resolved.project,
+      project,
       findings,
     };
   }
@@ -71,4 +79,3 @@ export class DependencyTrackClient {
     return (await response.json()) as T;
   }
 }
-
