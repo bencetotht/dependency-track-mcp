@@ -9,6 +9,10 @@ The toolkit can be used in two ways:
 
 The repository also includes an optional Docker Compose stack for running Dependency-Track with PostgreSQL and a private Trivy server.
 
+## Motivation
+
+This project was created in response to recent supply chain attacks. The goal is to make continuous vulnerability scanning easier to run and easier to fix with agentic development tools such as Claude Code or Codex.
+
 ## Project Structure
 
 - `src/cli.ts`: CLI entrypoint
@@ -49,3 +53,7 @@ For a local or self-hosted Dependency-Track stack, see `docker/compose.yaml` and
 - [MCP server documentation](docs/mcp-server.md)
 - [Docker Compose documentation](docs/docker-compose.md)
 - [Agent asset documentation](AGENT_AUTOMATION.md)
+
+## Warning
+
+This is a self-hosted stack, it is still under active development, and it is far from perfect. For enterprise repositories, a more robust solution such as Snyk is recommended.
