@@ -1,0 +1,4 @@
+url = "https://dependency-track.example.com"
+api_key_env = "DEPENDENCY_TRACK_API_KEY"
+timeout_seconds = 30
+retries = 2

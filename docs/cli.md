@@ -1,180 +1,75 @@
-# CLI
+# CLI Reference
 
-The CLI is the simplest way to use this toolkit. It runs local read-only Dependency-Track queries and does not require MCP integration.
-
-## What It Does
-
-The CLI can:
-
-- list visible Dependency-Track projects
-- detect the Dependency-Track project for the current repository
-- inspect the latest state of a project
-- list current findings for a project
-- install the optional Codex and Claude agent assets
-
-The CLI does not modify Dependency-Track, source code, dependencies, or Git history.
-
-## Setup
-
-### Prerequisites
-
-- Bun installed locally
-- a reachable Dependency-Track instance
-- a Dependency-Track API key
-
-### Configuration
-
-1. Copy `dtrack-agent.config.example.json` to `dtrack-agent.config.json`.
-2. Set `dependencyTrack.url`.
-3. Set `dependencyTrack.apiKeyEnv` to the environment variable name that will hold your Dependency-Track API key.
-4. Export that environment variable before running the CLI.
-
-Example config:
-
-```json
-{
-  "dependencyTrack": {
-    "url": "https://dep.example.com",
-    "apiKeyEnv": "DEPENDENCY_TRACK_API_KEY"
-  }
-}
-```
-
-Export the API key:
+`dtrack` is intentionally command-discoverable. Prefer the built-in help for the exact current interface:
 
 ```bash
-export DEPENDENCY_TRACK_API_KEY=your_api_key_here
+dtrack --help
+dtrack projects list --help
+dtrack findings list --help
 ```
 
-You can point the CLI at a different config file with `--config path`.
+## Global Options
 
-## Quick Start
+- `--url`: Dependency-Track base URL. Environment: `DTRACK_URL`.
+- `--api-key`: Dependency-Track API key. Environment: `DTRACK_API_KEY`; `DEPENDENCY_TRACK_API_KEY` is also supported.
+- `--config`: TOML config path. Environment: `DTRACK_CONFIG`.
+- `--output human|json`: human tables or stable JSON. Default: `human`.
+- `--timeout`: per-request timeout such as `10s` or `2m`. Default: `30s`.
+- `--retries`: transient failure retry count. Default: `2`.
+- `--verbose`: print request and retry context to stderr.
 
-From the toolkit checkout:
+## Useful Agent Commands
+
+List risky active application projects:
 
 ```bash
-bun run src/cli.ts projects list
-bun run src/cli.ts projects detect /path/to/repo
-bun run src/cli.ts projects inspect simplemailer
-bun run src/cli.ts findings list
+dtrack --output json projects list --active --classifier APPLICATION --sort risk --limit 20
 ```
 
-If you prefer built entrypoints, run:
+Inspect a project and include metrics:
 
 ```bash
-bun run build
+dtrack --output json projects show <project-name-or-uuid> --metrics --properties
 ```
 
-Then use the generated CLI:
+List high and critical findings:
 
 ```bash
-bun dist/cli.js projects detect
+dtrack --output json findings list <project-name-or-uuid> --min-severity high --sort severity
 ```
 
-## Command Reference
-
-Global options:
-
-- `--config <path>`: load a config file from a non-default location
-- `--json`: print machine-readable JSON output
-
-### `projects list [query]`
-
-Lists Dependency-Track projects visible to the configured API key. If `query` is provided, it filters by project name or UUID.
-
-Example:
+Get a compact finding summary:
 
 ```bash
-bun run src/cli.ts projects list
-bun run src/cli.ts projects list billing
+dtrack --output json findings summary <project-name-or-uuid>
 ```
 
-### `projects detect [repo-path]`
-
-Detects the Dependency-Track project that matches a local git repository. If `repo-path` is omitted, the current working directory is used.
-
-The detection flow:
-
-1. finds the git root
-2. reads the `origin` remote URL
-3. normalizes the remote URL
-4. compares it with Dependency-Track project metadata
-
-Matching uses, in order of availability:
-
-- `projects[].cloneUrl` from local config
-- project properties such as `automation.cloneUrl`, `automation.repoUrl`, `automation.repositoryUrl`, `repo.cloneUrl`, `repo.repositoryUrl`, `vcs.cloneUrl`, and `vcs.repositoryUrl`
-- project external references
-
-This avoids guessing by repository name alone.
-
-Examples:
+Find all projects affected by a vulnerability:
 
 ```bash
-bun run src/cli.ts projects detect
-bun run src/cli.ts projects detect /path/to/repo
+dtrack --output json vulnerabilities projects NVD CVE-2025-62718 --exclude-inactive
 ```
 
-### `projects inspect [project-name-or-uuid]`
-
-Returns the latest project details, project properties, and vulnerability totals.
-
-If you pass no identifier, the CLI first detects the project from the current repository path.
-
-Examples:
+Detect the current repository:
 
 ```bash
-bun run src/cli.ts projects inspect
-bun run src/cli.ts projects inspect simplemailer
-bun run src/cli.ts projects inspect 00000000-0000-0000-0000-000000000000
+dtrack --output json projects detect .
+dtrack --output json findings list --repo .
 ```
 
-### `findings list [project-name-or-uuid] [severity]`
+## Output Guidance
 
-Returns current findings for the selected project. Suppressed findings are filtered out.
+Use `--output json` for automation. JSON keys use Dependency-Track's camelCase style where possible and preserve raw finding component/vulnerability payloads so agents can inspect fields the CLI does not render in tables.
 
-Default severity is `CRITICAL`. Supported severities are:
+Human output uses tables and severity coloring where the terminal supports it. Counts are printed to stderr for list commands so JSON stdout remains clean in machine-readable mode.
 
-- `CRITICAL`
-- `HIGH`
-- `MEDIUM`
-- `LOW`
-- `UNASSIGNED`
+## Failure Behavior
 
-Examples:
+The CLI exits non-zero and prints an `error:` line on failure. Common failures:
 
-```bash
-bun run src/cli.ts findings list
-bun run src/cli.ts findings list HIGH
-bun run src/cli.ts findings list simplemailer CRITICAL
-```
-
-### `install-agent-assets [--force] [--codex] [--claude]`
-
-Installs the optional Codex and Claude assets from this repository into your home directory.
-
-Behavior:
-
-- if you pass neither `--codex` nor `--claude`, both are installed
-- `--codex` installs only Codex assets
-- `--claude` installs only Claude assets
-- `--force` replaces already-installed files
-
-Examples:
-
-```bash
-bun run src/cli.ts install-agent-assets
-bun run src/cli.ts install-agent-assets --codex
-bun run src/cli.ts install-agent-assets --claude
-bun run src/cli.ts install-agent-assets --force
-```
-
-## Output
-
-Human-readable output is the default. Use `--json` when you want stable output for automation, wrapper scripts, or agent consumption.
-
-## Notes And Warnings
-
-- The CLI is intentionally query-only.
-- It is designed to provide Dependency-Track context to a follow-up remediation workflow, not to perform remediation itself.
-- If the configured API key environment variable is missing, the CLI exits with an error.
+- missing URL or API key
+- HTTP 401/403 from insufficient Dependency-Track permissions
+- ambiguous project name or fragment
+- unknown project or vulnerability
+- Git remote mismatch during `projects detect`
+- timeout or exhausted retries

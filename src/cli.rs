@@ -1,0 +1,374 @@
+use std::path::PathBuf;
+use std::time::Duration;
+
+use clap::{Args, Parser, Subcommand, ValueEnum};
+
+use crate::models::{OutputFormat, Severity};
+
+#[derive(Debug, Parser)]
+#[command(
+    name = "dtrack",
+    version,
+    about = "Read-only Dependency-Track CLI for humans and AI agents",
+    long_about = "dtrack queries Dependency-Track projects, findings, vulnerabilities, and metrics without modifying server state. It is designed for interactive terminal use and for AI agents that need stable JSON output."
+)]
+pub struct Cli {
+    #[arg(
+        long,
+        global = true,
+        env = "DTRACK_URL",
+        help = "Base URL of the Dependency-Track frontend or API server, for example https://dependency-track.example.com",
+        long_help = "Base URL of the Dependency-Track instance. The CLI accepts either the frontend URL or the backend API URL and will normalize requests to /api/v1/..."
+    )]
+    pub url: Option<String>,
+
+    #[arg(
+        long,
+        global = true,
+        env = "DTRACK_API_KEY",
+        hide_env_values = true,
+        help = "Dependency-Track API key with read permissions",
+        long_help = "Dependency-Track API key. For the read-only commands in this CLI, the key typically needs VIEW_PORTFOLIO and VIEW_VULNERABILITY permissions."
+    )]
+    pub api_key: Option<String>,
+
+    #[arg(
+        long,
+        global = true,
+        env = "DTRACK_CONFIG",
+        help = "Optional TOML config file with url, api_key_env, timeout_seconds, and retries"
+    )]
+    pub config: Option<PathBuf>,
+
+    #[arg(
+        long,
+        global = true,
+        default_value = "human",
+        value_enum,
+        help = "Output format. Use json for stable machine-readable output."
+    )]
+    pub output: OutputFormat,
+
+    #[arg(
+        long,
+        global = true,
+        default_value = "30s",
+        value_parser = humantime::parse_duration,
+        help = "Per-request timeout such as 10s, 30s, or 2m"
+    )]
+    pub timeout: Duration,
+
+    #[arg(
+        long,
+        global = true,
+        default_value_t = 2,
+        help = "Retry count for transient HTTP 429/5xx errors and network failures"
+    )]
+    pub retries: u32,
+
+    #[arg(
+        long,
+        global = true,
+        help = "Print retry attempts and request context to stderr"
+    )]
+    pub verbose: bool,
+
+    #[command(subcommand)]
+    pub command: Commands,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum Commands {
+    #[command(about = "Find, inspect, and detect Dependency-Track projects")]
+    Projects {
+        #[command(subcommand)]
+        command: ProjectCommands,
+    },
+
+    #[command(about = "List and summarize vulnerability findings for a project")]
+    Findings {
+        #[command(subcommand)]
+        command: FindingsCommands,
+    },
+
+    #[command(
+        alias = "vulns",
+        about = "Inspect vulnerabilities and list affected projects"
+    )]
+    Vulnerabilities {
+        #[command(subcommand)]
+        command: VulnerabilityCommands,
+    },
+
+    #[command(about = "Show project or portfolio metrics")]
+    Metrics {
+        #[command(subcommand)]
+        command: MetricsCommands,
+    },
+
+    #[command(about = "Show resolved non-secret configuration")]
+    Config,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ProjectCommands {
+    #[command(
+        about = "List projects, optionally filtered locally by name, classifier, tag, or latest flag"
+    )]
+    List(ProjectListArgs),
+
+    #[command(about = "Show one project by UUID or exact/partial name")]
+    Show(ProjectShowArgs),
+
+    #[command(about = "Detect a Dependency-Track project for a local Git repository")]
+    Detect(ProjectDetectArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct ProjectListArgs {
+    #[arg(help = "Optional text matched against project name, version, and UUID")]
+    pub query: Option<String>,
+
+    #[arg(
+        long,
+        help = "Ask Dependency-Track to exclude inactive projects server-side"
+    )]
+    pub active: bool,
+
+    #[arg(
+        long,
+        help = "Only include projects whose classifier matches this value, such as APPLICATION or CONTAINER"
+    )]
+    pub classifier: Option<String>,
+
+    #[arg(long, help = "Only include projects with this tag name")]
+    pub tag: Option<String>,
+
+    #[arg(
+        long,
+        help = "Only include projects marked by Dependency-Track as the latest version"
+    )]
+    pub latest: bool,
+
+    #[arg(
+        long,
+        default_value = "name",
+        value_enum,
+        help = "Sort field for human and JSON output"
+    )]
+    pub sort: ProjectSort,
+
+    #[arg(
+        long,
+        help = "Maximum number of projects to print after filtering and sorting"
+    )]
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Args)]
+pub struct ProjectShowArgs {
+    #[arg(help = "Project UUID, exact project name, or unique name fragment")]
+    pub project: String,
+
+    #[arg(
+        long,
+        help = "Include project properties, useful for repo matching metadata"
+    )]
+    pub properties: bool,
+
+    #[arg(long, help = "Include current project metrics")]
+    pub metrics: bool,
+
+    #[arg(
+        long,
+        value_name = "MIN_SEVERITY",
+        help = "Include findings at or above this severity, for example --findings high"
+    )]
+    pub findings: Option<Severity>,
+}
+
+#[derive(Debug, Args)]
+pub struct ProjectDetectArgs {
+    #[arg(
+        default_value = ".",
+        help = "Repository path to inspect with git rev-parse"
+    )]
+    pub path: String,
+
+    #[arg(
+        long,
+        default_value = "origin",
+        help = "Git remote name used for repository matching"
+    )]
+    pub remote: String,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum FindingsCommands {
+    #[command(about = "List findings for a project or for the current Git repository")]
+    List(FindingsListArgs),
+
+    #[command(about = "Summarize findings by severity and analysis state")]
+    Summary(FindingsSummaryArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct FindingsListArgs {
+    #[arg(
+        help = "Project UUID/name. Omit this with --repo to detect from a local Git repository."
+    )]
+    pub project: Option<String>,
+
+    #[arg(
+        long,
+        help = "Repository path for project auto-detection when project is omitted"
+    )]
+    pub repo: Option<String>,
+
+    #[arg(
+        long,
+        default_value = "origin",
+        help = "Git remote name used with --repo or omitted project"
+    )]
+    pub remote: String,
+
+    #[arg(
+        long,
+        default_value = "critical",
+        value_enum,
+        help = "Lowest severity to include"
+    )]
+    pub min_severity: Severity,
+
+    #[arg(
+        long,
+        help = "Include findings suppressed in Dependency-Track analysis"
+    )]
+    pub include_suppressed: bool,
+
+    #[arg(
+        long,
+        help = "Only include findings with this analysis state, such as NOT_AFFECTED or EXPLOITABLE"
+    )]
+    pub state: Option<String>,
+
+    #[arg(
+        long,
+        help = "Only include findings whose component name contains this text"
+    )]
+    pub component: Option<String>,
+
+    #[arg(
+        long,
+        help = "Only include findings whose vulnerability ID contains this text"
+    )]
+    pub vulnerability: Option<String>,
+
+    #[arg(
+        long,
+        default_value = "severity",
+        value_enum,
+        help = "Sort field for findings"
+    )]
+    pub sort: FindingSort,
+
+    #[arg(
+        long,
+        help = "Maximum number of findings to print after filtering and sorting"
+    )]
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Args)]
+pub struct FindingsSummaryArgs {
+    #[arg(
+        help = "Project UUID/name. Omit this with --repo to detect from a local Git repository."
+    )]
+    pub project: Option<String>,
+
+    #[arg(
+        long,
+        help = "Repository path for project auto-detection when project is omitted"
+    )]
+    pub repo: Option<String>,
+
+    #[arg(
+        long,
+        default_value = "origin",
+        help = "Git remote name used with --repo or omitted project"
+    )]
+    pub remote: String,
+
+    #[arg(long, help = "Include suppressed findings in summary counts")]
+    pub include_suppressed: bool,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum VulnerabilityCommands {
+    #[command(about = "Show vulnerability details by source and vulnerability ID")]
+    Show(VulnerabilityShowArgs),
+
+    #[command(about = "List projects affected by a vulnerability")]
+    Projects(VulnerabilityProjectsArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct VulnerabilityShowArgs {
+    #[arg(help = "Vulnerability source, for example NVD, GITHUB, OSV, or INTERNAL")]
+    pub source: String,
+
+    #[arg(help = "Vulnerability ID, for example CVE-2024-12345")]
+    pub vulnerability: String,
+}
+
+#[derive(Debug, Args)]
+pub struct VulnerabilityProjectsArgs {
+    #[arg(help = "Vulnerability source, for example NVD, GITHUB, OSV, or INTERNAL")]
+    pub source: String,
+
+    #[arg(help = "Vulnerability ID, for example CVE-2024-12345")]
+    pub vulnerability: String,
+
+    #[arg(long, help = "Exclude inactive projects server-side")]
+    pub exclude_inactive: bool,
+
+    #[arg(
+        long,
+        default_value = "risk",
+        value_enum,
+        help = "Sort affected projects"
+    )]
+    pub sort: ProjectSort,
+
+    #[arg(long, help = "Maximum number of projects to print after sorting")]
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum MetricsCommands {
+    #[command(about = "Show current metrics for one project")]
+    Project(MetricsProjectArgs),
+
+    #[command(about = "Show current portfolio-wide metrics")]
+    Portfolio,
+}
+
+#[derive(Debug, Args)]
+pub struct MetricsProjectArgs {
+    #[arg(help = "Project UUID, exact project name, or unique name fragment")]
+    pub project: String,
+}
+
+#[derive(Clone, Debug, ValueEnum)]
+pub enum ProjectSort {
+    Name,
+    LastBomImport,
+    Risk,
+}
+
+#[derive(Clone, Debug, ValueEnum)]
+pub enum FindingSort {
+    Severity,
+    Component,
+    Vulnerability,
+}

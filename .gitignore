@@ -1,5 +1,3 @@
-dist/
-.dtrack-agent/
-
-dtrack-agent.config.json
 .envrc
+dtrack.toml
+target/

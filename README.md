@@ -1,59 +1,133 @@
-# Dependency-Track Agent Toolkit
+# Dependency-Track CLI
 
-This repository provides a small Bun/TypeScript toolkit for read-only Dependency-Track queries from an agent workflow. It helps an agent identify the current repository in Dependency-Track, inspect the latest project state, and retrieve current findings without modifying code, dependencies, or Git history.
+`dtrack` is a read-only Rust CLI for querying Dependency-Track from a terminal or an AI agent workflow. It replaces the old MCP-oriented toolkit with direct commands that agents can discover through `--help`, execute safely, and parse as JSON.
 
-The toolkit can be used in two ways:
+The CLI focuses on the Dependency-Track API areas that are useful during vulnerability remediation:
 
-- as a local CLI
-- as a stdio MCP server for Codex or Claude Code
+- project discovery and inspection
+- Git repository to Dependency-Track project detection
+- project finding export with severity/component/state filters
+- vulnerability details and affected project lookup
+- current project and portfolio metrics
 
-The repository also includes an optional Docker Compose stack for running Dependency-Track with PostgreSQL and a private Trivy server.
-
-## Motivation
-
-This project was created in response to recent supply chain attacks. The goal is to make continuous vulnerability scanning easier to run and easier to fix with agentic development tools such as Claude Code or Codex.
-
-## Project Structure
-
-- `src/cli.ts`: CLI entrypoint
-- `src/mcp-server.ts`: stdio MCP server entrypoint
-- `src/lib/`: shared config, git matching, and Dependency-Track query logic
-- `agent-assets/`: optional Codex and Claude prompt/command assets
-- `docker/compose.yaml`: optional Dependency-Track stack
-- `docs/cli.md`: CLI reference and setup
-- `docs/mcp-server.md`: MCP server reference and setup
-- `docs/docker-compose.md`: Docker Compose stack reference and setup
-- `AGENT_AUTOMATION.md`: agent asset installation and workflow notes
-
-## Setup And Quick Start
-
-1. Install Bun locally.
-2. Copy `dtrack-agent.config.example.json` to `dtrack-agent.config.json`.
-3. Set `dependencyTrack.url`.
-4. Export the API key environment variable named by `dependencyTrack.apiKeyEnv`.
-5. Run a quick CLI query:
+## Install
 
 ```bash
-bun run src/cli.ts projects list
-bun run src/cli.ts projects detect /path/to/target-repo
-bun run src/cli.ts findings list
+cargo build --release
+./target/release/dtrack --help
 ```
 
-If you want MCP instead of direct CLI usage, build the project and register `dist/mcp-server.js` with your agent:
+During development:
 
 ```bash
-bun run build
+cargo run -- --help
 ```
 
-For a local or self-hosted Dependency-Track stack, see `docker/compose.yaml` and `docs/docker-compose.md`.
+## Configuration
 
-## Documentation
+The fastest setup is environment variables:
 
-- [CLI documentation](docs/cli.md)
-- [MCP server documentation](docs/mcp-server.md)
-- [Docker Compose documentation](docs/docker-compose.md)
-- [Agent asset documentation](AGENT_AUTOMATION.md)
+```bash
+export DTRACK_URL="https://dependency-track.example.com"
+export DTRACK_API_KEY="odt_..."
+dtrack projects list --active
+```
 
-## Warning
+For compatibility with existing local setups, `DEPENDENCY_TRACK_API_KEY` is also accepted.
 
-This is a self-hosted stack, it is still under active development, and it is far from perfect. For enterprise repositories, a more robust solution such as Snyk is recommended.
+You can also use `dtrack.toml` in the current directory, or pass `--config path/to/dtrack.toml`:
+
+```toml
+url = "https://dependency-track.example.com"
+api_key_env = "DEPENDENCY_TRACK_API_KEY"
+timeout_seconds = 30
+retries = 2
+```
+
+Do not commit API keys. Prefer `api_key_env` over `api_key` for shared config files.
+
+## Agent-Friendly Usage
+
+Use `--output json` when another program or LLM will consume the output:
+
+```bash
+dtrack --output json projects list --active --classifier APPLICATION --sort risk --limit 20
+dtrack --output json projects show datadocsoft --metrics --properties
+dtrack --output json findings list datadocsoft --min-severity high --sort severity --limit 50
+dtrack --output json findings summary datadocsoft
+dtrack --output json vulnerabilities projects NVD CVE-2025-62718 --exclude-inactive
+```
+
+Use human output for interactive triage:
+
+```bash
+dtrack projects list --active --sort risk --limit 10
+dtrack metrics project datadocsoft
+dtrack findings list datadocsoft --min-severity critical --limit 10
+```
+
+If the current repository has matching Dependency-Track project metadata, omit the project and let the CLI detect it:
+
+```bash
+dtrack projects detect .
+dtrack findings list --repo .
+```
+
+Project detection compares the local Git remote with project properties such as:
+
+- `automation.cloneUrl`
+- `automation.repositoryUrl`
+- `repo.cloneUrl`
+- `repo.repositoryUrl`
+- `vcs.cloneUrl`
+- `vcs.repositoryUrl`
+
+It also checks Git-like project external references.
+
+## Commands
+
+Run `dtrack --help` or any subcommand help for the full reference:
+
+```bash
+dtrack projects --help
+dtrack findings list --help
+dtrack vulnerabilities --help
+dtrack metrics --help
+```
+
+Primary command groups:
+
+- `projects list`: list projects with filters for active status, classifier, tags, latest version, sorting, and limits.
+- `projects show`: inspect one project by UUID, exact name, or unique name fragment. Optional flags include `--properties`, `--metrics`, and `--findings`.
+- `projects detect`: resolve a local Git repository to a Dependency-Track project.
+- `findings list`: export findings for a project, filter by severity, component, vulnerability ID, analysis state, and suppression status.
+- `findings summary`: count findings by severity and analysis state.
+- `vulnerabilities show`: fetch vulnerability details by source and ID.
+- `vulnerabilities projects`: list projects affected by a vulnerability.
+- `metrics project`: show current metrics for one project.
+- `metrics portfolio`: show current portfolio metrics.
+- `config`: show resolved non-secret configuration.
+
+## Reliability
+
+Every HTTP request has a configurable timeout and retry count:
+
+```bash
+dtrack --timeout 10s --retries 4 --verbose projects list --active
+```
+
+Retries are used for transient network failures, HTTP 429, and HTTP 5xx responses. HTTP errors include the method, API path, status code, and response body where available.
+
+## Development
+
+```bash
+cargo fmt
+cargo test
+cargo run -- --url https://dt.bencetotht.hu --output json projects list --active --limit 5
+```
+
+The CLI uses Dependency-Track's documented OpenAPI endpoints under `/api/v1`. The public Dependency-Track docs note that the OpenAPI spec is served by the backend at `/api/openapi.json` or `/api/openapi.yaml`.
+
+## Removed MCP Assets
+
+The previous TypeScript MCP server, Claude/Codex asset installers, and Bun tests were removed intentionally. This repository is now a direct CLI tool: agents should call `dtrack --help` and execute specific commands rather than connecting through MCP.

@@ -98,7 +98,7 @@ If your Traefik network name, router setup, or certificate resolver differs, upd
 
 ## Notes And Warnings
 
-- This stack is optional and separate from the CLI and MCP tooling.
+- This stack is optional and separate from the CLI.
 - The compose file is written for a Traefik-based deployment, not a standalone localhost-only setup.
 - Keep the Dependency-Track API and frontend pinned to the same `DTRACK_VERSION`.
 - Keep the Trivy token secret.
