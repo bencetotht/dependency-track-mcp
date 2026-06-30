@@ -58,6 +58,15 @@ dtrack --output json findings summary datadocsoft
 dtrack --output json vulnerabilities projects NVD CVE-2025-62718 --exclude-inactive
 ```
 
+Common aliases are available for shorter agent commands:
+
+```bash
+dtrack projects ls --active
+dtrack projects get datadocsoft --metrics
+dtrack findings ls datadocsoft --min-severity high
+dtrack vuln ls NVD CVE-2025-62718
+```
+
 Use human output for interactive triage:
 
 ```bash
@@ -107,6 +116,8 @@ Primary command groups:
 - `metrics project`: show current metrics for one project.
 - `metrics portfolio`: show current portfolio metrics.
 - `config`: show resolved non-secret configuration.
+
+Aliases: `ls` for list-like commands, `get` for show-like commands, and `vuln`/`vulns` for `vulnerabilities`.
 
 ## Reliability
 

@@ -92,7 +92,7 @@ pub enum Commands {
     },
 
     #[command(
-        alias = "vulns",
+        aliases = ["vuln", "vulns"],
         about = "Inspect vulnerabilities and list affected projects"
     )]
     Vulnerabilities {
@@ -113,11 +113,15 @@ pub enum Commands {
 #[derive(Debug, Subcommand)]
 pub enum ProjectCommands {
     #[command(
+        alias = "ls",
         about = "List projects, optionally filtered locally by name, classifier, tag, or latest flag"
     )]
     List(ProjectListArgs),
 
-    #[command(about = "Show one project by UUID or exact/partial name")]
+    #[command(
+        alias = "get",
+        about = "Show one project by UUID or exact/partial name"
+    )]
     Show(ProjectShowArgs),
 
     #[command(about = "Detect a Dependency-Track project for a local Git repository")]
@@ -205,7 +209,10 @@ pub struct ProjectDetectArgs {
 
 #[derive(Debug, Subcommand)]
 pub enum FindingsCommands {
-    #[command(about = "List findings for a project or for the current Git repository")]
+    #[command(
+        alias = "ls",
+        about = "List findings for a project or for the current Git repository"
+    )]
     List(FindingsListArgs),
 
     #[command(about = "Summarize findings by severity and analysis state")]
@@ -305,10 +312,13 @@ pub struct FindingsSummaryArgs {
 
 #[derive(Debug, Subcommand)]
 pub enum VulnerabilityCommands {
-    #[command(about = "Show vulnerability details by source and vulnerability ID")]
+    #[command(
+        alias = "get",
+        about = "Show vulnerability details by source and vulnerability ID"
+    )]
     Show(VulnerabilityShowArgs),
 
-    #[command(about = "List projects affected by a vulnerability")]
+    #[command(alias = "ls", about = "List projects affected by a vulnerability")]
     Projects(VulnerabilityProjectsArgs),
 }
 

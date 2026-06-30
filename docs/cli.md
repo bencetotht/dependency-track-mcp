@@ -26,6 +26,12 @@ List risky active application projects:
 dtrack --output json projects list --active --classifier APPLICATION --sort risk --limit 20
 ```
 
+Short form:
+
+```bash
+dtrack --output json projects ls --active --classifier APPLICATION --sort risk --limit 20
+```
+
 Inspect a project and include metrics:
 
 ```bash
@@ -38,6 +44,12 @@ List high and critical findings:
 dtrack --output json findings list <project-name-or-uuid> --min-severity high --sort severity
 ```
 
+Short form:
+
+```bash
+dtrack --output json findings ls <project-name-or-uuid> --min-severity high --sort severity
+```
+
 Get a compact finding summary:
 
 ```bash
@@ -48,6 +60,12 @@ Find all projects affected by a vulnerability:
 
 ```bash
 dtrack --output json vulnerabilities projects NVD CVE-2025-62718 --exclude-inactive
+```
+
+Short form:
+
+```bash
+dtrack --output json vuln ls NVD CVE-2025-62718 --exclude-inactive
 ```
 
 Detect the current repository:
