@@ -44,17 +44,15 @@ timeout_seconds = 30
 retries = 2
 ```
 
-Do not commit API keys. Prefer `api_key_env` over `api_key` for shared config files.
-
 ## Agent-Friendly Usage
 
 Use `--output json` when another program or LLM will consume the output:
 
 ```bash
 dtrack --output json projects list --active --classifier APPLICATION --sort risk --limit 20
-dtrack --output json projects show datadocsoft --metrics --properties
-dtrack --output json findings list datadocsoft --min-severity high --sort severity --limit 50
-dtrack --output json findings summary datadocsoft
+dtrack --output json projects show ds --metrics --properties
+dtrack --output json findings list ds --min-severity high --sort severity --limit 50
+dtrack --output json findings summary ds
 dtrack --output json vulnerabilities projects NVD CVE-2025-62718 --exclude-inactive
 ```
 
@@ -62,8 +60,8 @@ Common aliases are available for shorter agent commands:
 
 ```bash
 dtrack projects ls --active
-dtrack projects get datadocsoft --metrics
-dtrack findings ls datadocsoft --min-severity high
+dtrack projects get ds --metrics
+dtrack findings ls ds --min-severity high
 dtrack vuln ls NVD CVE-2025-62718
 ```
 
@@ -71,8 +69,8 @@ Use human output for interactive triage:
 
 ```bash
 dtrack projects list --active --sort risk --limit 10
-dtrack metrics project datadocsoft
-dtrack findings list datadocsoft --min-severity critical --limit 10
+dtrack metrics project ds
+dtrack findings list ds --min-severity critical --limit 10
 ```
 
 If the current repository has matching Dependency-Track project metadata, omit the project and let the CLI detect it:
@@ -139,6 +137,3 @@ cargo run -- --url https://dt.bencetotht.hu --output json projects list --active
 
 The CLI uses Dependency-Track's documented OpenAPI endpoints under `/api/v1`. The public Dependency-Track docs note that the OpenAPI spec is served by the backend at `/api/openapi.json` or `/api/openapi.yaml`.
 
-## Removed MCP Assets
-
-The previous TypeScript MCP server, Claude/Codex asset installers, and Bun tests were removed intentionally. This repository is now a direct CLI tool: agents should call `dtrack --help` and execute specific commands rather than connecting through MCP.
