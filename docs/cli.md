@@ -91,3 +91,18 @@ The CLI exits non-zero and prints an `error:` line on failure. Common failures:
 - unknown project or vulnerability
 - Git remote mismatch during `projects detect`
 - timeout or exhausted retries
+
+## Context and write commands
+
+See [README](../README.md#contexts-and-credentials) for credential storage and
+platform config paths. Context commands: `add`, `list`, `use`, `current`,
+`remove`, `test`. All accept `--output json`.
+
+`--project-version VERSION` selects a version globally; `projects show`,
+`findings list`, `findings summary`, and `metrics project` also accept
+`--version VERSION`.
+
+`findings triage PROJECT --component UUID --vulnerability UUID` accepts
+`--state STATE`, `--suppressed true|false`, and `--comment TEXT`.
+`projects reanalyze PROJECT` queues a fresh analysis. Both require appropriate
+server write permissions.

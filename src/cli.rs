@@ -9,8 +9,8 @@ use crate::models::{OutputFormat, Severity};
 #[command(
     name = "dtrack",
     version,
-    about = "Read-only Dependency-Track CLI for humans and AI agents",
-    long_about = "dtrack queries Dependency-Track projects, findings, vulnerabilities, and metrics without modifying server state. It is designed for interactive terminal use and for AI agents that need stable JSON output."
+    about = "Dependency-Track CLI for humans and AI agents",
+    long_about = "dtrack manages Dependency-Track projects, findings, vulnerabilities, and metrics. It is designed for interactive terminal use and for AI agents that need stable JSON output."
 )]
 pub struct Cli {
     #[arg(
@@ -21,6 +21,16 @@ pub struct Cli {
         long_help = "Base URL of the Dependency-Track instance. The CLI accepts either the frontend URL or the backend API URL and will normalize requests to /api/v1/..."
     )]
     pub url: Option<String>,
+
+    #[arg(short = 'c', long, global = true, env = "DTRACK_CONTEXT")]
+    pub context: Option<String>,
+
+    #[arg(
+        long = "project-version",
+        global = true,
+        help = "Select an exact project version"
+    )]
+    pub project_version: Option<String>,
 
     #[arg(
         long,
@@ -52,19 +62,19 @@ pub struct Cli {
     #[arg(
         long,
         global = true,
-        default_value = "30s",
+        env = "DTRACK_TIMEOUT",
         value_parser = humantime::parse_duration,
         help = "Per-request timeout such as 10s, 30s, or 2m"
     )]
-    pub timeout: Duration,
+    pub timeout: Option<Duration>,
 
     #[arg(
         long,
         global = true,
-        default_value_t = 2,
+        env = "DTRACK_RETRIES",
         help = "Retry count for transient HTTP 429/5xx errors and network failures"
     )]
-    pub retries: u32,
+    pub retries: Option<u32>,
 
     #[arg(
         long,
@@ -108,6 +118,11 @@ pub enum Commands {
 
     #[command(about = "Show resolved non-secret configuration")]
     Config,
+
+    Context {
+        #[command(subcommand)]
+        command: ContextCommands,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -126,6 +141,8 @@ pub enum ProjectCommands {
 
     #[command(about = "Detect a Dependency-Track project for a local Git repository")]
     Detect(ProjectDetectArgs),
+
+    Reanalyze(MetricsProjectArgs),
 }
 
 #[derive(Debug, Args)]
@@ -171,6 +188,8 @@ pub struct ProjectListArgs {
 
 #[derive(Debug, Args)]
 pub struct ProjectShowArgs {
+    #[arg(long, help = "Select an exact project version")]
+    pub version: Option<String>,
     #[arg(help = "Project UUID, exact project name, or unique name fragment")]
     pub project: String,
 
@@ -217,10 +236,14 @@ pub enum FindingsCommands {
 
     #[command(about = "Summarize findings by severity and analysis state")]
     Summary(FindingsSummaryArgs),
+
+    Triage(TriageArgs),
 }
 
 #[derive(Debug, Args)]
 pub struct FindingsListArgs {
+    #[arg(long, help = "Select an exact project version")]
+    pub version: Option<String>,
     #[arg(
         help = "Project UUID/name. Omit this with --repo to detect from a local Git repository."
     )]
@@ -288,6 +311,8 @@ pub struct FindingsListArgs {
 
 #[derive(Debug, Args)]
 pub struct FindingsSummaryArgs {
+    #[arg(long, help = "Select an exact project version")]
+    pub version: Option<String>,
     #[arg(
         help = "Project UUID/name. Omit this with --repo to detect from a local Git repository."
     )]
@@ -365,6 +390,8 @@ pub enum MetricsCommands {
 
 #[derive(Debug, Args)]
 pub struct MetricsProjectArgs {
+    #[arg(long, help = "Select an exact project version")]
+    pub version: Option<String>,
     #[arg(help = "Project UUID, exact project name, or unique name fragment")]
     pub project: String,
 }
@@ -381,4 +408,45 @@ pub enum FindingSort {
     Severity,
     Component,
     Vulnerability,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ContextCommands {
+    Add {
+        name: String,
+        #[arg(long)]
+        url: Option<String>,
+        #[arg(long, hide_env_values = true)]
+        api_key: Option<String>,
+        #[arg(long, conflicts_with_all = ["api_key", "api_key_stdin"])]
+        api_key_env: Option<String>,
+        #[arg(long, conflicts_with = "api_key")]
+        api_key_stdin: bool,
+    },
+    List,
+    Use {
+        name: String,
+    },
+    Current,
+    Remove {
+        name: String,
+    },
+    Test {
+        name: Option<String>,
+    },
+}
+
+#[derive(Debug, Args)]
+pub struct TriageArgs {
+    pub project: String,
+    #[arg(long)]
+    pub component: String,
+    #[arg(long)]
+    pub vulnerability: String,
+    #[arg(long, value_parser = ["NOT_SET", "IN_TRIAGE", "EXPLOITABLE", "NOT_AFFECTED", "FALSE_POSITIVE"])]
+    pub state: Option<String>,
+    #[arg(long)]
+    pub suppressed: Option<bool>,
+    #[arg(long)]
+    pub comment: Option<String>,
 }

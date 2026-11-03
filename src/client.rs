@@ -44,7 +44,7 @@ impl DependencyTrackClient {
         {
             query.push(("name", name.clone()));
         }
-        self.get_query("/api/v1/project", &query).await
+        self.paged("/api/v1/project", &query).await
     }
 
     pub async fn project(&self, uuid: &str) -> Result<Project> {
@@ -86,7 +86,7 @@ impl DependencyTrackClient {
         vulnerability: &str,
         exclude_inactive: bool,
     ) -> Result<Vec<Project>> {
-        self.get_query(
+        self.paged(
             &format!(
                 "/api/v1/vulnerability/source/{}/vuln/{}/projects",
                 urlencoding::encode(source),
@@ -123,13 +123,21 @@ impl DependencyTrackClient {
         })
     }
 
+    pub fn with_version(&self, version: Option<String>) -> Self {
+        let mut client = self.clone();
+        if version.is_some() {
+            client.settings.project_version = version;
+        }
+        client
+    }
+
     pub async fn resolve_project(&self, identifier: &str) -> Result<Project> {
         if looks_like_uuid(identifier) {
             return self.project(identifier).await;
         }
 
         let projects = self
-            .get_query::<Vec<Project>>(
+            .paged(
                 "/api/v1/project",
                 &[
                     ("pageSize", "500".to_string()),
@@ -158,16 +166,21 @@ impl DependencyTrackClient {
                 .then(left.name.cmp(&right.name))
         });
 
-        let best_name = candidates[0].name.clone();
-        let best_uuid = candidates[0].uuid.clone();
-        let exact_matches = candidates
+        if candidates
             .iter()
-            .filter(|project| project.name.eq_ignore_ascii_case(identifier))
-            .count();
-        if exact_matches == 1 || candidates.len() == 1 {
+            .any(|p| p.name.eq_ignore_ascii_case(identifier))
+        {
+            candidates.retain(|p| p.name.eq_ignore_ascii_case(identifier));
+        }
+        if let Some(version) = &self.settings.project_version {
+            candidates.retain(|p| p.version.as_ref() == Some(version));
+        }
+        if candidates.is_empty() {
+            bail!("no matching project version");
+        }
+        if candidates.len() == 1 {
             return Ok(candidates.remove(0));
         }
-
         let names = candidates
             .iter()
             .take(10)
@@ -182,7 +195,7 @@ impl DependencyTrackClient {
             .collect::<Vec<_>>()
             .join("; ");
         bail!(
-            "project identifier '{identifier}' is ambiguous. Best candidate is {best_name} ({best_uuid}), but matched: {names}"
+            "project identifier '{identifier}' is ambiguous; select --project-version or use UUID. Matches: {names}"
         );
     }
 
@@ -194,7 +207,7 @@ impl DependencyTrackClient {
         let repo_path = find_git_root(path)?;
         let remote_url = normalize_git_remote_url(&get_git_remote_url(&repo_path, remote)?);
         let projects: Vec<Project> = self
-            .get_query(
+            .paged(
                 "/api/v1/project",
                 &[
                     ("pageSize", "500".to_string()),
@@ -203,26 +216,112 @@ impl DependencyTrackClient {
             )
             .await?;
 
-        for project in projects {
-            let properties = self
-                .project_properties(&project.uuid)
-                .await
-                .unwrap_or_default();
+        use futures_util::{StreamExt, stream};
+        let mut pending = stream::iter(projects.into_iter().map(|project| async move {
+            let properties = self.project_properties(&project.uuid).await;
+            (project, properties)
+        }))
+        .buffered(8);
+        let mut matches = Vec::new();
+        while let Some((project, properties)) = pending.next().await {
+            let properties = properties
+                .with_context(|| format!("loading properties for project {}", project.uuid))?;
             if let Some(source) = match_project_remote(&project, &properties, &remote_url) {
-                return Ok(DetectedProject {
-                    project,
-                    properties,
-                    repo_path,
-                    remote_url,
-                    match_source: source,
-                });
+                matches.push((project, properties, source));
             }
+        }
+        if let Some(version) = &self.settings.project_version {
+            matches.retain(|(p, _, _)| p.version.as_ref() == Some(version));
+        }
+        matches.sort_by(|a, b| {
+            b.0.is_latest
+                .cmp(&a.0.is_latest)
+                .then(b.0.last_bom_import.cmp(&a.0.last_bom_import))
+        });
+        if let Some((project, properties, match_source)) = matches.into_iter().next() {
+            return Ok(DetectedProject {
+                project,
+                properties,
+                repo_path,
+                remote_url,
+                match_source,
+            });
         }
 
         bail!(
             "no Dependency-Track project matched git remote '{}'. Add a project property such as automation.cloneUrl, automation.repositoryUrl, repo.cloneUrl, repo.repositoryUrl, vcs.cloneUrl, or a Git external reference.",
             remote_url
         );
+    }
+
+    async fn paged(&self, path: &str, query: &[(&str, String)]) -> Result<Vec<Project>> {
+        let mut all = Vec::new();
+        let mut page = 1;
+        loop {
+            let mut query = query.to_vec();
+            query.retain(|(key, _)| *key != "pageSize");
+            query.push(("pageSize", "500".into()));
+            query.push(("pageNumber", page.to_string()));
+            let batch: Vec<Project> = self.get_query(path, &query).await?;
+            let count = batch.len();
+            if count > 0
+                && batch
+                    .iter()
+                    .all(|p| all.iter().any(|old: &Project| old.uuid == p.uuid))
+            {
+                bail!("server ignored pagination for {path}");
+            }
+            all.extend(batch);
+            if count < 500 {
+                return Ok(all);
+            }
+            page += 1;
+        }
+    }
+
+    pub async fn analysis(
+        &self,
+        project: &str,
+        component: &str,
+        vulnerability: &str,
+    ) -> Result<serde_json::Value> {
+        self.get_query(
+            "/api/v1/analysis",
+            &[
+                ("project", project.into()),
+                ("component", component.into()),
+                ("vulnerability", vulnerability.into()),
+            ],
+        )
+        .await
+    }
+
+    pub async fn write(
+        &self,
+        path: &str,
+        body: Option<serde_json::Value>,
+    ) -> Result<serde_json::Value> {
+        let mut request = self
+            .http
+            .request(
+                if body.is_some() {
+                    Method::PUT
+                } else {
+                    Method::POST
+                },
+                format!("{}{path}", self.settings.base_url),
+            )
+            .header("X-Api-Key", &self.settings.api_key);
+        if let Some(body) = body {
+            request = request.json(&body);
+        }
+        let response = request.send().await?.error_for_status()?;
+        let bytes = response.bytes().await?;
+        if bytes.is_empty() {
+            Ok(serde_json::json!({"accepted":true}))
+        } else {
+            Ok(serde_json::from_slice(&bytes)?)
+        }
     }
 
     async fn get<T: DeserializeOwned>(&self, path: &str) -> Result<T> {
@@ -268,7 +367,13 @@ impl DependencyTrackClient {
                 Ok(response) => {
                     let status = response.status();
                     let body = response.text().await.unwrap_or_default();
-                    if should_retry(status) && attempt <= self.settings.retries + 1 {
+                    if path == "/api/v1/analysis"
+                        && status == StatusCode::NOT_FOUND
+                        && body.trim() == "No analysis exists."
+                    {
+                        return Ok(serde_json::from_value(serde_json::json!({}))?);
+                    }
+                    if should_retry(status) && attempt <= self.settings.retries {
                         self.retry_delay(attempt).await;
                         continue;
                     }
@@ -281,7 +386,7 @@ impl DependencyTrackClient {
                     );
                 }
                 Err(error) => {
-                    if attempt <= self.settings.retries + 1 {
+                    if attempt <= self.settings.retries {
                         if self.settings.verbose {
                             eprintln!("request failed: {error}. retrying...");
                         }
@@ -391,5 +496,77 @@ fn property_key(property: &ProjectProperty) -> String {
         name
     } else {
         format!("{group}.{name}")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    fn mock(responses: Vec<(u16, String)>) -> (DependencyTrackClient, std::thread::JoinHandle<()>) {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let base_url = format!("http://{}", listener.local_addr().unwrap());
+        let task = std::thread::spawn(move || {
+            for (status, body) in responses {
+                let (mut socket, _) = listener.accept().unwrap();
+                let mut buffer = [0; 8192];
+                let count = socket.read(&mut buffer).unwrap();
+                assert!(count > 0);
+                write!(socket, "HTTP/1.1 {status} Test\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
+            }
+        });
+        (
+            DependencyTrackClient::new(Settings {
+                base_url,
+                api_key: "test".into(),
+                timeout: Duration::from_secs(2),
+                retries: 2,
+                verbose: false,
+                config_path: None,
+                context: None,
+                project_version: None,
+            })
+            .unwrap(),
+            task,
+        )
+    }
+    #[tokio::test]
+    async fn exact_name_wins_over_newer_partial() {
+        let (client, task) = mock(vec![(
+            200,
+            r#"[{"uuid":"a","name":"ds-image","isLatest":true},{"uuid":"b","name":"ds"}]"#.into(),
+        )]);
+        assert_eq!(client.resolve_project("ds").await.unwrap().uuid, "b");
+        task.join().unwrap();
+    }
+    #[tokio::test]
+    async fn retries_are_additional_attempts() {
+        let (client, task) = mock(vec![(503, "busy".into()); 3]);
+        assert!(
+            client
+                .project("x")
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("503")
+        );
+        task.join().unwrap();
+    }
+    #[tokio::test]
+    async fn projects_fetch_every_page() {
+        let first = serde_json::Value::Array(
+            (0..500)
+                .map(|i| serde_json::json!({"uuid":i.to_string(),"name":"test"}))
+                .collect(),
+        );
+        let (client, task) = mock(vec![
+            (200, first.to_string()),
+            (200, r#"[{"uuid":"last","name":"test"}]"#.into()),
+        ]);
+        assert_eq!(
+            client.paged("/api/v1/project", &[]).await.unwrap().len(),
+            501
+        );
+        task.join().unwrap();
     }
 }

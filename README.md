@@ -1,6 +1,6 @@
 # Dependency-Track CLI
 
-`dtrack` is a read-only Rust CLI for querying Dependency-Track from a terminal or an AI agent workflow. It replaces the old MCP-oriented toolkit with direct commands that agents can discover through `--help`, execute safely, and parse as JSON.
+`dtrack` is a Rust CLI for querying Dependency-Track from a terminal or an AI agent workflow. It replaces the old MCP-oriented toolkit with direct commands that agents can discover through `--help`, execute safely, and parse as JSON.
 
 The CLI focuses on the Dependency-Track API areas that are useful during vulnerability remediation:
 
@@ -137,3 +137,49 @@ cargo run -- --url https://dt.bencetotht.hu --output json projects list --active
 
 The CLI uses Dependency-Track's documented OpenAPI endpoints under `/api/v1`. The public Dependency-Track docs note that the OpenAPI spec is served by the backend at `/api/openapi.json` or `/api/openapi.yaml`.
 
+
+## Contexts and credentials
+
+Install from a checkout with `cargo install --path . --locked`. Release binaries
+are built by the Rust CI workflow for Linux and macOS.
+
+`dtrack context add home --url https://dt.example.com` prompts for a hidden key,
+validates the connection, and stores the key in macOS Keychain or Linux Secret
+Service. Linux desktops need a running, unlocked Secret Service (such as GNOME
+Keyring). Headless Linux can use `--api-key-env HOME_DT_KEY` instead.
+`--api-key-stdin` accepts a piped key; keys are never saved by these commands
+in TOML. Fully specified commands do not prompt.
+
+Manage installations with `context list`, `context use NAME`,
+`context current`, `context remove NAME`, and `context test [NAME]`.
+Select one per invocation with `-c NAME` or `DTRACK_CONTEXT`.
+A repository's `dtrack.toml` may contain `context = "company"`.
+Selection order is flag/environment, repository context, then user
+`current_context`. Individual connection flags/environment override file values.
+Repository flat values override the selected context, which overrides user flat
+values. Explicit timeout and retry flags always win.
+
+The user config is `~/Library/Application Support/dtrack/config.toml` on macOS
+and `$XDG_CONFIG_HOME/dtrack/config.toml` (normally
+`~/.config/dtrack/config.toml`) on Linux. `--config` selects an alternative
+file for both context management and command execution.
+`dtrack config` works without a URL or key and never displays credentials.
+
+## Record triage and reanalyze
+
+Use project UUIDs or select a version with `--project-version VERSION`.
+Exact names take priority over partial matches; multiple versions require a
+version selector or UUID.
+
+```sh
+dtrack findings triage PROJECT --component COMPONENT_UUID --vulnerability VULNERABILITY_UUID \
+  --state NOT_AFFECTED --suppressed true --comment "Reason and supporting evidence"
+dtrack projects reanalyze PROJECT
+```
+
+Triage preserves existing fields you did not specify. These commands need
+server write permissions (VULNERABILITY_ANALYSIS for triage; permissions for
+the finding analysis endpoint for reanalysis). Reanalysis is asynchronous:
+acceptance does not mean processing has finished. Writes are not automatically
+retried, to avoid duplicate audit comments. Read retries mean additional attempts:
+`--retries 2` makes at most three requests.

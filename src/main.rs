@@ -1,6 +1,7 @@
 mod cli;
 mod client;
 mod config;
+mod contexts;
 mod git;
 mod models;
 mod output;
@@ -25,11 +26,28 @@ async fn main() {
 
 async fn run() -> Result<()> {
     let cli = Cli::parse();
+    if let Commands::Context { command } = &cli.command {
+        return contexts::run(&cli, command).await;
+    }
     let settings = Settings::load(&cli)?;
     let client = DependencyTrackClient::new(settings)?;
 
     match cli.command {
+        Commands::Context { .. } => unreachable!(),
         Commands::Projects { command } => match command {
+            ProjectCommands::Reanalyze(args) => {
+                let client = client.with_version(args.version.clone());
+                let project = client.resolve_project(&args.project).await?;
+                print_value(
+                    &client
+                        .write(
+                            &format!("/api/v1/finding/project/{}/analyze", project.uuid),
+                            None,
+                        )
+                        .await?,
+                    cli.output,
+                )?;
+            }
             ProjectCommands::List(args) => {
                 let mut projects = client.list_projects(&args).await?;
                 filter_projects(
@@ -44,6 +62,7 @@ async fn run() -> Result<()> {
                 print_projects(&projects, cli.output)?;
             }
             ProjectCommands::Show(args) => {
+                let client = client.with_version(args.version.clone());
                 let project = client.resolve_project(&args.project).await?;
                 let properties = if args.properties {
                     Some(client.project_properties(&project.uuid).await?)
@@ -76,7 +95,43 @@ async fn run() -> Result<()> {
             }
         },
         Commands::Findings { command } => match command {
+            FindingsCommands::Triage(args) => {
+                let project = client.resolve_project(&args.project).await?;
+                if args.state.is_none() && args.suppressed.is_none() && args.comment.is_none() {
+                    bail!("provide --state, --suppressed, or --comment");
+                }
+                let previous = client
+                    .analysis(&project.uuid, &args.component, &args.vulnerability)
+                    .await?;
+                let mut body = serde_json::json!({"project":project.uuid,"component":args.component,"vulnerability":args.vulnerability,
+                    "analysisState":"NOT_SET","analysisJustification":"NOT_SET","analysisResponse":"NOT_SET","isSuppressed":false});
+                for field in [
+                    "analysisState",
+                    "analysisJustification",
+                    "analysisResponse",
+                    "analysisDetails",
+                    "isSuppressed",
+                ] {
+                    if let Some(value) = previous.get(field) {
+                        body[field] = value.clone();
+                    }
+                }
+                if let Some(state) = args.state {
+                    body["analysisState"] = state.into();
+                }
+                if let Some(suppressed) = args.suppressed {
+                    body["isSuppressed"] = suppressed.into();
+                }
+                if let Some(comment) = args.comment {
+                    body["comment"] = comment.into();
+                }
+                print_value(
+                    &client.write("/api/v1/analysis", Some(body)).await?,
+                    cli.output,
+                )?;
+            }
             FindingsCommands::List(args) => {
+                let client = client.with_version(args.version.clone());
                 let resolved = client
                     .resolve_project_or_repo(
                         args.project.as_deref(),
@@ -118,6 +173,7 @@ async fn run() -> Result<()> {
                 }
             }
             FindingsCommands::Summary(args) => {
+                let client = client.with_version(args.version.clone());
                 let project = client
                     .resolve_project_or_repo(
                         args.project.as_deref(),
@@ -128,7 +184,7 @@ async fn run() -> Result<()> {
                 let findings = load_findings(
                     &client,
                     &project.project,
-                    Severity::Low,
+                    Severity::Unassigned,
                     args.include_suppressed,
                     None,
                     None,
@@ -160,6 +216,7 @@ async fn run() -> Result<()> {
         },
         Commands::Metrics { command } => match command {
             MetricsCommands::Project(args) => {
+                let client = client.with_version(args.version.clone());
                 let project = client.resolve_project(&args.project).await?;
                 let metrics = client.project_metrics(&project.uuid).await?;
                 print_metrics(Some(&project), &metrics, cli.output)?;
@@ -296,4 +353,26 @@ pub(crate) fn require_non_empty(value: &str, field: &str) -> Result<()> {
         bail!("{field} cannot be empty");
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn project_filters_combine() {
+        let mut projects: Vec<Project> = serde_json::from_value(serde_json::json!([
+            {"uuid":"1","name":"app","classifier":"APPLICATION","isLatest":true,"tags":[{"name":"production"}]},
+            {"uuid":"2","name":"app-image","classifier":"CONTAINER","isLatest":true,"tags":[{"name":"production"}]},
+            {"uuid":"3","name":"app","classifier":"APPLICATION","isLatest":false,"tags":[{"name":"production"}]}
+        ])).unwrap();
+        filter_projects(
+            &mut projects,
+            Some("app"),
+            Some("application"),
+            Some("production"),
+            true,
+        );
+        assert_eq!(projects.len(), 1);
+        assert_eq!(projects[0].uuid, "1");
+    }
 }

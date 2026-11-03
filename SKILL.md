@@ -184,3 +184,16 @@ Ask the user before proceeding when:
 - the finding appears false positive but suppressing or documenting it is outside the requested scope;
 - required registry, package manager, or test credentials are unavailable;
 - local verification cannot be run and the change would be risky without it.
+
+## Multiple installations and server triage
+
+Use `-c NAME` / `DTRACK_CONTEXT`, or a repository `context = "NAME"`.
+Use `context add` for Keychain (macOS) / Secret Service (Linux) storage;
+headless agents should use `--api-key-env VARIABLE`. Never place keys in a PR.
+Disambiguate project versions with `--project-version VERSION` or UUID.
+
+After validating a decision, record it with `findings triage PROJECT
+--component COMPONENT_UUID --vulnerability VULNERABILITY_UUID --state NOT_AFFECTED
+--suppressed true --comment "Evidence"`. Suppression requires a reason based
+on actual investigation. After uploading a corrected BOM, `projects reanalyze
+PROJECT` queues analysis; verify findings again after server processing.
