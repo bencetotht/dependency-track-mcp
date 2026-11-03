@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::{collections::HashSet, hash::Hash, time::Duration};
 
 use anyhow::{Context, Result, bail};
 use reqwest::{Client, Method, StatusCode};
@@ -67,9 +67,15 @@ impl DependencyTrackClient {
     /// Findings for a project. The FPF export endpoint never includes
     /// suppressed findings, so this uses the findings endpoint instead.
     pub async fn findings(&self, uuid: &str, include_suppressed: bool) -> Result<Vec<Finding>> {
-        self.get_query(
+        self.paged_by(
             &format!("/api/v1/finding/project/{uuid}"),
             &[("suppressed", include_suppressed.to_string())],
+            |finding: &Finding| {
+                (
+                    finding.component.to_string(),
+                    finding.vulnerability.to_string(),
+                )
+            },
         )
         .await
     }
@@ -330,23 +336,32 @@ impl DependencyTrackClient {
     }
 
     async fn paged(&self, path: &str, query: &[(&str, String)]) -> Result<Vec<Project>> {
+        self.paged_by(path, query, |project: &Project| project.uuid.clone())
+            .await
+    }
+
+    async fn paged_by<T: DeserializeOwned, K: Eq + Hash>(
+        &self,
+        path: &str,
+        query: &[(&str, String)],
+        key: impl Fn(&T) -> K,
+    ) -> Result<Vec<T>> {
         let mut all = Vec::new();
+        let mut seen = HashSet::new();
         let mut page = 1;
         loop {
             let mut query = query.to_vec();
-            query.retain(|(key, _)| *key != "pageSize");
+            query.retain(|(key, _)| !matches!(*key, "pageSize" | "pageNumber"));
             query.push(("pageSize", "500".into()));
             query.push(("pageNumber", page.to_string()));
-            let (batch, total): (Vec<Project>, _) =
+            let (batch, total): (Vec<T>, _) =
                 self.request_with_total(Method::GET, path, &query).await?;
             let count = batch.len();
-            if count > 0
-                && batch
-                    .iter()
-                    .all(|p| all.iter().any(|old: &Project| old.uuid == p.uuid))
-            {
+            let keys: Vec<_> = batch.iter().map(&key).collect();
+            if count > 0 && keys.iter().all(|key| seen.contains(key)) {
                 bail!("server ignored pagination for {path}");
             }
+            seen.extend(keys);
             all.extend(batch);
             // Some endpoints (such as affected projects) ignore paging but send
             // the full list with its X-Total-Count.
@@ -760,7 +775,109 @@ mod tests {
         let (client, task) = mock(vec![(200, "[]".into())]);
         client.findings("p", true).await.unwrap();
         let requests = task.join().unwrap();
-        assert!(requests[0].starts_with("GET /api/v1/finding/project/p?suppressed=true "));
+        assert!(requests[0].starts_with(
+            "GET /api/v1/finding/project/p?suppressed=true&pageSize=500&pageNumber=1 "
+        ));
+    }
+
+    fn finding_page(start: usize, end: usize) -> String {
+        serde_json::Value::Array(
+            (start..end)
+                .map(|i| serde_json::json!({
+                    "component": {"uuid": format!("c{i}"), "name": format!("component-{i}")},
+                    "vulnerability": {
+                        "uuid": format!("v{i}"), "vulnId": format!("CVE-test-{i}"),
+                        "severity": if i < 4 || (100..106).contains(&i) { "CRITICAL" } else { "HIGH" }
+                    }
+                }))
+                .collect(),
+        ).to_string()
+    }
+
+    #[tokio::test]
+    async fn findings_fetch_every_page_even_when_server_caps_page_size() {
+        for suppressed in [false, true] {
+            let (client, task) = mock_with(
+                vec![
+                    Reply(200, "X-Total-Count: 152\r\n", finding_page(0, 100)),
+                    Reply(200, "X-Total-Count: 152\r\n", finding_page(100, 152)),
+                ],
+                None,
+            );
+            let findings = client.findings("p", suppressed).await.unwrap();
+            assert_eq!(findings.len(), 152);
+            assert_eq!(
+                findings
+                    .iter()
+                    .filter(|f| f.severity() == crate::models::Severity::Critical)
+                    .count(),
+                10
+            );
+            let requests = task.join().unwrap();
+            assert_eq!(requests.len(), 2);
+            for (index, request) in requests.iter().enumerate() {
+                assert!(request.starts_with(&format!(
+                    "GET /api/v1/finding/project/p?suppressed={suppressed}&pageSize=500&pageNumber={} ", index + 1
+                )), "{request}");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn findings_fetch_every_page_without_total_count() {
+        let (client, task) = mock(vec![
+            (200, finding_page(0, 500)),
+            (200, finding_page(500, 501)),
+        ]);
+        let findings = client.findings("p", false).await.unwrap();
+        assert_eq!(findings.len(), 501);
+        assert_eq!(task.join().unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn findings_support_legacy_unpaged_response() {
+        let (client, task) = mock(vec![(200, finding_page(0, 152))]);
+        assert_eq!(client.findings("p", false).await.unwrap().len(), 152);
+        assert_eq!(task.join().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn findings_fail_if_server_repeats_a_page() {
+        let (client, task) = mock_with(
+            vec![
+                Reply(200, "X-Total-Count: 152\r\n", finding_page(0, 100)),
+                Reply(200, "X-Total-Count: 152\r\n", finding_page(0, 100)),
+            ],
+            None,
+        );
+        let error = client.findings("p", false).await.unwrap_err();
+        assert!(error.to_string().contains("server ignored pagination"));
+        assert_eq!(task.join().unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn triage_resolves_findings_on_later_pages() {
+        let (client, task) = mock_with(
+            vec![
+                Reply(200, "X-Total-Count: 152\r\n", finding_page(0, 100)),
+                Reply(200, "X-Total-Count: 152\r\n", finding_page(100, 152)),
+            ],
+            None,
+        );
+        let project: Project =
+            serde_json::from_value(serde_json::json!({"uuid": "p", "name": "matekx"})).unwrap();
+        let finding = client
+            .resolve_finding(&project, "component-151", "CVE-test-151")
+            .await
+            .unwrap();
+        assert_eq!(finding.component_uuid(), "c151");
+        let requests = task.join().unwrap();
+        assert_eq!(requests.len(), 2);
+        assert!(
+            requests
+                .iter()
+                .all(|request| request.contains("suppressed=true"))
+        );
     }
     #[tokio::test]
     async fn triage_finding_is_resolved_by_name_and_alias() {

@@ -23,6 +23,50 @@ During development:
 cargo run -- --help
 ```
 
+### Nix
+
+The flake provides `packages.<system>.dtrack` (also the default package) for
+`x86_64-linux` and `aarch64-linux`. It pins nixpkgs in `flake.lock` and uses
+`Cargo.lock` for Rust dependencies. Git is included in the executable's runtime
+PATH for repository detection. Linux Secret Service support is built in; an
+unlocked Secret Service is needed only when storing keys in the keyring.
+
+Build, check (including the Rust tests), or run from a checkout:
+
+```sh
+nix build
+nix flake check
+nix run . -- --help
+```
+
+To install system-wide from a NixOS flake such as `/home/bence/nixnas`, add this
+input after publishing the packaging changes to GitHub:
+
+```nix
+inputs.dtrack = {
+  url = "github:bencetotht/dependency-track-mcp";
+  inputs.nixpkgs.follows = "nixpkgs";
+};
+```
+
+In a host module that receives `inputs` through `specialArgs` (as nixnas does):
+
+```nix
+{ inputs, pkgs, ... }:
+{
+  environment.systemPackages = [
+    inputs.dtrack.packages.${pkgs.stdenv.hostPlatform.system}.dtrack
+  ];
+}
+```
+
+In nixnas, the same package can instead go in `nixnas.packages.extra`. Update
+the consumer lock file with `nix flake update dtrack`, then rebuild the desired
+host using its usual `nixos-rebuild switch --flake .#HOST` command.
+For local integration before publishing, use
+`--override-input dtrack path:/home/bence/Developer/dependency-track-mcp` on the
+consumer's Nix command after adding the input.
+
 ## Configuration
 
 The fastest setup is environment variables:
@@ -118,6 +162,10 @@ Primary command groups:
 Aliases: `ls` for list-like commands, `get` for show-like commands, and `vuln`/`vulns` for `vulnerabilities`.
 
 ## Reliability
+
+Findings are fetched across all API pages before filtering, sorting, summarizing,
+or resolving a finding for triage. A server-imposed page size does not limit the
+results when the API reports the total count.
 
 Every HTTP request has a configurable timeout and retry count:
 

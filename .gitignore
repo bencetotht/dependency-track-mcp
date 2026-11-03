@@ -1,3 +1,5 @@
 .envrc
 dtrack.toml
 target/
+/result
+/result-*
