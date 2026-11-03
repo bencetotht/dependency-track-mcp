@@ -11,7 +11,9 @@ dtrack findings list --help
 ## Global Options
 
 - `--url`: Dependency-Track base URL. Environment: `DTRACK_URL`.
-- `--api-key`: Dependency-Track API key. Environment: `DTRACK_API_KEY`; `DEPENDENCY_TRACK_API_KEY` is also supported.
+- `--api-key`: Dependency-Track API key. Environment: `DTRACK_API_KEY`; `DEPENDENCY_TRACK_API_KEY` is also supported. Environment keys are ignored while a context is selected.
+- `-c`, `--context`: named installation from `dtrack context add`. Environment: `DTRACK_CONTEXT`.
+- `--project-version`: exact project version when a name has several versions.
 - `--config`: TOML config path. Environment: `DTRACK_CONFIG`.
 - `--output human|json`: human tables or stable JSON. Default: `human`.
 - `--timeout`: per-request timeout such as `10s` or `2m`. Default: `30s`.
@@ -98,11 +100,13 @@ See [README](../README.md#contexts-and-credentials) for credential storage and
 platform config paths. Context commands: `add`, `list`, `use`, `current`,
 `remove`, `test`. All accept `--output json`.
 
-`--project-version VERSION` selects a version globally; `projects show`,
-`findings list`, `findings summary`, and `metrics project` also accept
-`--version VERSION`.
+`-c, --context NAME` (or `DTRACK_CONTEXT`) selects an installation. See the
+README for how the URL and key are chosen.
 
-`findings triage PROJECT --component UUID --vulnerability UUID` accepts
-`--state STATE`, `--suppressed true|false`, and `--comment TEXT`.
-`projects reanalyze PROJECT` queues a fresh analysis. Both require appropriate
-server write permissions.
+`--project-version VERSION` selects an exact project version for every command
+that takes a project. Without it, the version marked latest is used.
+
+`findings triage PROJECT --component NAME|PURL|UUID --vulnerability ID|UUID`
+accepts `--state`, `--justification`, `--response`, `--details`,
+`--suppressed true|false`, and `--comment`. `projects reanalyze PROJECT` queues
+a fresh analysis. See `--help` on each for the accepted values and permissions.

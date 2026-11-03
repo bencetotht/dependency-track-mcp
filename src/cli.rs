@@ -16,29 +16,33 @@ pub struct Cli {
     #[arg(
         long,
         global = true,
-        env = "DTRACK_URL",
         help = "Base URL of the Dependency-Track frontend or API server, for example https://dependency-track.example.com",
-        long_help = "Base URL of the Dependency-Track instance. The CLI accepts either the frontend URL or the backend API URL and will normalize requests to /api/v1/..."
+        long_help = "Base URL of the Dependency-Track instance. The CLI accepts either the frontend URL or the backend API URL and will normalize requests to /api/v1/... Overrides any context. The DTRACK_URL environment variable is used when neither --url nor --context is given."
     )]
     pub url: Option<String>,
 
-    #[arg(short = 'c', long, global = true, env = "DTRACK_CONTEXT")]
+    #[arg(
+        short = 'c',
+        long,
+        global = true,
+        env = "DTRACK_CONTEXT",
+        help = "Named Dependency-Track installation from `dtrack context list`",
+        long_help = "Named Dependency-Track installation created with `dtrack context add`. The context's URL and stored API key are used together; DTRACK_URL, DTRACK_API_KEY, DEPENDENCY_TRACK_API_KEY, and repository dtrack.toml connection values are ignored while a context is selected."
+    )]
     pub context: Option<String>,
 
     #[arg(
         long = "project-version",
         global = true,
-        help = "Select an exact project version"
+        help = "Select an exact project version when a project name has several versions"
     )]
     pub project_version: Option<String>,
 
     #[arg(
         long,
         global = true,
-        env = "DTRACK_API_KEY",
-        hide_env_values = true,
-        help = "Dependency-Track API key with read permissions",
-        long_help = "Dependency-Track API key. For the read-only commands in this CLI, the key typically needs VIEW_PORTFOLIO and VIEW_VULNERABILITY permissions."
+        help = "Dependency-Track API key (prefer contexts or environment variables)",
+        long_help = "Dependency-Track API key. Read commands need VIEW_PORTFOLIO and VIEW_VULNERABILITY; `findings triage` also needs VULNERABILITY_ANALYSIS. Without a context, DTRACK_API_KEY or DEPENDENCY_TRACK_API_KEY is used. Passing a key on the command line stores it in shell history."
     )]
     pub api_key: Option<String>,
 
@@ -119,6 +123,10 @@ pub enum Commands {
     #[command(about = "Show resolved non-secret configuration")]
     Config,
 
+    #[command(
+        about = "Add, select, test, and remove named Dependency-Track installations",
+        long_about = "Manage named Dependency-Track installations (contexts). Each context stores a URL plus an API key in the OS credential store (macOS Keychain, Linux Secret Service) or a reference to an environment variable. Select one per command with -c NAME or DTRACK_CONTEXT, per repository with `context = \"NAME\"` in dtrack.toml, or by default with `dtrack context use NAME`."
+    )]
     Context {
         #[command(subcommand)]
         command: ContextCommands,
@@ -142,6 +150,10 @@ pub enum ProjectCommands {
     #[command(about = "Detect a Dependency-Track project for a local Git repository")]
     Detect(ProjectDetectArgs),
 
+    #[command(
+        about = "Queue a fresh vulnerability analysis for a project (writes to the server)",
+        long_about = "Ask Dependency-Track to re-run vulnerability analysis for a project. The request is asynchronous: success means the work was queued, not finished. Re-query findings after the server has processed it. Requires VIEW_VULNERABILITY permission."
+    )]
     Reanalyze(MetricsProjectArgs),
 }
 
@@ -188,8 +200,6 @@ pub struct ProjectListArgs {
 
 #[derive(Debug, Args)]
 pub struct ProjectShowArgs {
-    #[arg(long, help = "Select an exact project version")]
-    pub version: Option<String>,
     #[arg(help = "Project UUID, exact project name, or unique name fragment")]
     pub project: String,
 
@@ -237,13 +247,15 @@ pub enum FindingsCommands {
     #[command(about = "Summarize findings by severity and analysis state")]
     Summary(FindingsSummaryArgs),
 
+    #[command(
+        about = "Record an analysis decision for one finding (writes to the server)",
+        long_about = "Record an analysis decision (state, justification, response, details, suppression, audit comment) for one finding. The finding is located by component name, PURL, or UUID and by vulnerability ID or UUID, including suppressed findings. Fields you do not pass keep their current value. Requires VULNERABILITY_ANALYSIS permission. Writes are never retried, to avoid duplicate audit comments."
+    )]
     Triage(TriageArgs),
 }
 
 #[derive(Debug, Args)]
 pub struct FindingsListArgs {
-    #[arg(long, help = "Select an exact project version")]
-    pub version: Option<String>,
     #[arg(
         help = "Project UUID/name. Omit this with --repo to detect from a local Git repository."
     )]
@@ -311,8 +323,6 @@ pub struct FindingsListArgs {
 
 #[derive(Debug, Args)]
 pub struct FindingsSummaryArgs {
-    #[arg(long, help = "Select an exact project version")]
-    pub version: Option<String>,
     #[arg(
         help = "Project UUID/name. Omit this with --repo to detect from a local Git repository."
     )]
@@ -390,8 +400,6 @@ pub enum MetricsCommands {
 
 #[derive(Debug, Args)]
 pub struct MetricsProjectArgs {
-    #[arg(long, help = "Select an exact project version")]
-    pub version: Option<String>,
     #[arg(help = "Project UUID, exact project name, or unique name fragment")]
     pub project: String,
 }
@@ -412,41 +420,90 @@ pub enum FindingSort {
 
 #[derive(Debug, Subcommand)]
 pub enum ContextCommands {
+    #[command(
+        about = "Add a context; prompts for missing URL and API key in a terminal",
+        long_about = "Add a named Dependency-Track installation. Missing --url and API key values are prompted for when stdin is a terminal (the key is read hidden); non-interactive callers must pass them. The connection is tested before anything is saved. Keys are stored in the OS credential store unless --api-key-env is used, in which case only the variable name is saved. The first context added becomes the current context."
+    )]
     Add {
+        #[arg(help = "Context name, for example home-dep-track")]
         name: String,
-        #[arg(long)]
+        #[arg(long, help = "Dependency-Track frontend or API URL")]
         url: Option<String>,
-        #[arg(long, hide_env_values = true)]
+        #[arg(
+            long,
+            help = "API key to store in the OS credential store (visible in shell history; prefer the prompt or --api-key-stdin)"
+        )]
         api_key: Option<String>,
-        #[arg(long, conflicts_with_all = ["api_key", "api_key_stdin"])]
+        #[arg(
+            long,
+            conflicts_with_all = ["api_key", "api_key_stdin"],
+            help = "Read the API key from this environment variable at run time instead of storing it"
+        )]
         api_key_env: Option<String>,
-        #[arg(long, conflicts_with = "api_key")]
+        #[arg(
+            long,
+            conflicts_with = "api_key",
+            help = "Read the API key from stdin and store it in the OS credential store"
+        )]
         api_key_stdin: bool,
     },
+    #[command(alias = "ls", about = "List contexts and show the current one")]
     List,
+    #[command(about = "Make a context the default for future commands")]
     Use {
+        #[arg(help = "Context name")]
         name: String,
     },
+    #[command(about = "Show the default context")]
     Current,
+    #[command(alias = "rm", about = "Remove a context and its stored API key")]
     Remove {
+        #[arg(help = "Context name")]
         name: String,
     },
+    #[command(about = "Check that a context's URL and API key work")]
     Test {
+        #[arg(help = "Context name; defaults to -c/DTRACK_CONTEXT, then the current context")]
         name: Option<String>,
     },
 }
 
 #[derive(Debug, Args)]
 pub struct TriageArgs {
+    #[arg(help = "Project UUID, exact project name, or unique name fragment")]
     pub project: String,
-    #[arg(long)]
+    #[arg(
+        long,
+        help = "Component name, name@version, PURL, or component UUID from `findings list`"
+    )]
     pub component: String,
-    #[arg(long)]
+    #[arg(
+        long,
+        help = "Vulnerability ID such as CVE-2024-12345 or GHSA-..., or vulnerability UUID"
+    )]
     pub vulnerability: String,
-    #[arg(long, value_parser = ["NOT_SET", "IN_TRIAGE", "EXPLOITABLE", "NOT_AFFECTED", "FALSE_POSITIVE"])]
+    #[arg(long, value_parser = ["NOT_SET", "IN_TRIAGE", "EXPLOITABLE", "NOT_AFFECTED", "FALSE_POSITIVE", "RESOLVED"], help = "Analysis state")]
     pub state: Option<String>,
-    #[arg(long)]
+    #[arg(
+        long,
+        value_parser = [
+            "NOT_SET", "CODE_NOT_PRESENT", "CODE_NOT_REACHABLE", "REQUIRES_CONFIGURATION",
+            "REQUIRES_DEPENDENCY", "REQUIRES_ENVIRONMENT", "PROTECTED_BY_COMPILER",
+            "PROTECTED_AT_RUNTIME", "PROTECTED_AT_PERIMETER", "PROTECTED_BY_MITIGATING_CONTROL",
+        ],
+        help = "Why the finding is not exploitable; use with --state NOT_AFFECTED"
+    )]
+    pub justification: Option<String>,
+    #[arg(
+        long,
+        value_parser = ["NOT_SET", "CAN_NOT_FIX", "WILL_NOT_FIX", "UPDATE", "ROLLBACK", "WORKAROUND_AVAILABLE"],
+        help = "Planned vendor/team response"
+    )]
+    pub response: Option<String>,
+    #[arg(long, help = "Analysis details: the evidence behind the decision")]
+    pub details: Option<String>,
+    #[arg(long, help = "Suppress (true) or unsuppress (false) the finding")]
     pub suppressed: Option<bool>,
-    #[arg(long)]
+    #[arg(long, help = "Audit-trail comment to append")]
     pub comment: Option<String>,
 }

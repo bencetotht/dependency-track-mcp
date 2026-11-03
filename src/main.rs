@@ -36,7 +36,6 @@ async fn run() -> Result<()> {
         Commands::Context { .. } => unreachable!(),
         Commands::Projects { command } => match command {
             ProjectCommands::Reanalyze(args) => {
-                let client = client.with_version(args.version.clone());
                 let project = client.resolve_project(&args.project).await?;
                 print_value(
                     &client
@@ -62,7 +61,6 @@ async fn run() -> Result<()> {
                 print_projects(&projects, cli.output)?;
             }
             ProjectCommands::Show(args) => {
-                let client = client.with_version(args.version.clone());
                 let project = client.resolve_project(&args.project).await?;
                 let properties = if args.properties {
                     Some(client.project_properties(&project.uuid).await?)
@@ -96,14 +94,32 @@ async fn run() -> Result<()> {
         },
         Commands::Findings { command } => match command {
             FindingsCommands::Triage(args) => {
+                if args.state.is_none()
+                    && args.justification.is_none()
+                    && args.response.is_none()
+                    && args.details.is_none()
+                    && args.suppressed.is_none()
+                    && args.comment.is_none()
+                {
+                    bail!(
+                        "provide at least one of --state, --justification, --response, --details, --suppressed, or --comment"
+                    );
+                }
                 let project = client.resolve_project(&args.project).await?;
-                if args.state.is_none() && args.suppressed.is_none() && args.comment.is_none() {
-                    bail!("provide --state, --suppressed, or --comment");
+                let finding = client
+                    .resolve_finding(&project, &args.component, &args.vulnerability)
+                    .await?;
+                let (component, vulnerability) =
+                    (finding.component_uuid(), finding.vulnerability_uuid());
+                if component.is_empty() || vulnerability.is_empty() {
+                    bail!(
+                        "Dependency-Track did not return component and vulnerability UUIDs for this finding"
+                    );
                 }
                 let previous = client
-                    .analysis(&project.uuid, &args.component, &args.vulnerability)
+                    .analysis(&project.uuid, component, vulnerability)
                     .await?;
-                let mut body = serde_json::json!({"project":project.uuid,"component":args.component,"vulnerability":args.vulnerability,
+                let mut body = serde_json::json!({"project":project.uuid,"component":component,"vulnerability":vulnerability,
                     "analysisState":"NOT_SET","analysisJustification":"NOT_SET","analysisResponse":"NOT_SET","isSuppressed":false});
                 for field in [
                     "analysisState",
@@ -116,14 +132,19 @@ async fn run() -> Result<()> {
                         body[field] = value.clone();
                     }
                 }
-                if let Some(state) = args.state {
-                    body["analysisState"] = state.into();
+                for (field, value) in [
+                    ("analysisState", args.state),
+                    ("analysisJustification", args.justification),
+                    ("analysisResponse", args.response),
+                    ("analysisDetails", args.details),
+                    ("comment", args.comment),
+                ] {
+                    if let Some(value) = value {
+                        body[field] = value.into();
+                    }
                 }
                 if let Some(suppressed) = args.suppressed {
                     body["isSuppressed"] = suppressed.into();
-                }
-                if let Some(comment) = args.comment {
-                    body["comment"] = comment.into();
                 }
                 print_value(
                     &client.write("/api/v1/analysis", Some(body)).await?,
@@ -131,7 +152,6 @@ async fn run() -> Result<()> {
                 )?;
             }
             FindingsCommands::List(args) => {
-                let client = client.with_version(args.version.clone());
                 let resolved = client
                     .resolve_project_or_repo(
                         args.project.as_deref(),
@@ -173,7 +193,6 @@ async fn run() -> Result<()> {
                 }
             }
             FindingsCommands::Summary(args) => {
-                let client = client.with_version(args.version.clone());
                 let project = client
                     .resolve_project_or_repo(
                         args.project.as_deref(),
@@ -216,7 +235,6 @@ async fn run() -> Result<()> {
         },
         Commands::Metrics { command } => match command {
             MetricsCommands::Project(args) => {
-                let client = client.with_version(args.version.clone());
                 let project = client.resolve_project(&args.project).await?;
                 let metrics = client.project_metrics(&project.uuid).await?;
                 print_metrics(Some(&project), &metrics, cli.output)?;
@@ -242,7 +260,7 @@ async fn load_findings(
     state: Option<&str>,
     component: Option<&str>,
 ) -> Result<Vec<Finding>> {
-    let mut findings = client.findings_export(&project.uuid).await?;
+    let mut findings = client.findings(&project.uuid, include_suppressed).await?;
     findings.retain(|finding| {
         finding.severity().rank() >= min_severity.rank()
             && (include_suppressed || !finding.is_suppressed())

@@ -9,7 +9,7 @@ use std::{
     time::Duration,
 };
 
-#[derive(Clone, Default, Deserialize, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct Profile {
     pub url: Option<String>,
     pub api_key: Option<String>,
@@ -18,7 +18,7 @@ pub struct Profile {
     pub timeout_seconds: Option<u64>,
     pub retries: Option<u32>,
 }
-#[derive(Default, Deserialize, Serialize)]
+#[derive(Debug, Default, Deserialize, Serialize)]
 pub struct FileConfig {
     #[serde(flatten)]
     pub profile: Profile,
@@ -36,8 +36,28 @@ pub struct Settings {
     pub verbose: bool,
     pub config_path: Option<PathBuf>,
     pub context: Option<String>,
+    pub connection_source: Option<&'static str>,
     pub project_version: Option<String>,
 }
+
+/// Where an API key comes from. Resolved lazily so that the URL and key of a
+/// connection are always chosen together, from the same source.
+#[derive(Clone, Debug, PartialEq)]
+pub enum KeySource {
+    Value(String),
+    Env(String),
+    Keyring(String),
+}
+
+#[derive(Debug, Default, PartialEq)]
+pub struct Connection {
+    pub url: Option<String>,
+    pub key: Option<KeySource>,
+    pub context: Option<String>,
+    pub source: Option<&'static str>,
+    pub warnings: Vec<String>,
+}
+
 pub fn user_config_path() -> Result<PathBuf> {
     Ok(dirs::config_dir()
         .context("cannot determine user config directory")?
@@ -52,6 +72,128 @@ pub fn read_config(path: &Path) -> Result<FileConfig> {
 pub fn credential(name: &str) -> Result<keyring::Entry> {
     Ok(keyring::Entry::new("dtrack", name)?)
 }
+
+/// The key configured for a profile. Contexts may use the OS credential store;
+/// legacy flat profiles (`name == None`) cannot.
+pub fn profile_key(profile: &Profile, name: Option<&str>) -> Option<KeySource> {
+    if let Some(var) = &profile.api_key_env {
+        return Some(KeySource::Env(var.clone()));
+    }
+    if let (Some(true), Some(name)) = (profile.keyring, name) {
+        return Some(KeySource::Keyring(name.to_owned()));
+    }
+    profile.api_key.clone().map(KeySource::Value)
+}
+
+pub fn resolve_key(key: &KeySource) -> Result<String> {
+    match key {
+        KeySource::Value(value) => Ok(value.clone()),
+        KeySource::Env(name) => env::var(name)
+            .with_context(|| format!("API key environment variable {name} is not set")),
+        KeySource::Keyring(name) => credential(name)?.get_password().with_context(|| {
+            format!("reading API key for context '{name}' from the OS credential store")
+        }),
+    }
+}
+
+/// Picks the URL and API key for this invocation. The first matching source
+/// supplies both values:
+///
+/// 1. `--url` flag, with `--api-key` or DTRACK_API_KEY / DEPENDENCY_TRACK_API_KEY
+/// 2. `--context` / DTRACK_CONTEXT
+/// 3. DTRACK_URL, with `--api-key` or the API key environment variables
+/// 4. `context = "..."` in the repository dtrack.toml
+/// 5. `current_context` in the user config
+/// 6. legacy flat `url` in the repository dtrack.toml, then the user config
+///
+/// A selected context never takes its URL from a repository file or its key
+/// from the environment, so a context's key is only sent to that context's URL.
+pub fn select_connection(
+    url_flag: Option<&str>,
+    key_flag: Option<&str>,
+    context_flag: Option<&str>,
+    env: &dyn Fn(&str) -> Option<String>,
+    local: &FileConfig,
+    user: &FileConfig,
+) -> Result<Connection> {
+    let explicit_key = || key_flag.map(|key| KeySource::Value(key.to_owned()));
+    let env_key = || {
+        explicit_key().or_else(|| {
+            ["DTRACK_API_KEY", "DEPENDENCY_TRACK_API_KEY"]
+                .into_iter()
+                .find(|name| env(name).is_some_and(|value| !value.trim().is_empty()))
+                .map(|name| KeySource::Env(name.to_owned()))
+        })
+    };
+    let from_context = |name: &str, source: &'static str| -> Result<Connection> {
+        let profile = user
+            .contexts
+            .get(name)
+            .with_context(|| format!("unknown context '{name}'; see `dtrack context list`"))?;
+        let mut warnings = Vec::new();
+        if local.profile.url.is_some() {
+            warnings.push(format!(
+                "ignoring url in ./dtrack.toml because context '{name}' is selected"
+            ));
+        }
+        Ok(Connection {
+            url: Some(
+                profile
+                    .url
+                    .clone()
+                    .with_context(|| format!("context '{name}' has no url"))?,
+            ),
+            key: explicit_key().or_else(|| profile_key(profile, Some(name))),
+            context: Some(name.to_owned()),
+            source: Some(source),
+            warnings,
+        })
+    };
+
+    if let Some(url) = url_flag {
+        return Ok(Connection {
+            url: Some(url.to_owned()),
+            key: env_key(),
+            source: Some("--url"),
+            ..Default::default()
+        });
+    }
+    if let Some(name) = context_flag {
+        return from_context(name, "--context/DTRACK_CONTEXT");
+    }
+    if let Some(url) = env("DTRACK_URL").filter(|url| !url.trim().is_empty()) {
+        return Ok(Connection {
+            url: Some(url),
+            key: env_key(),
+            source: Some("DTRACK_URL"),
+            ..Default::default()
+        });
+    }
+    if let Some(name) = &local.context {
+        return from_context(name, "./dtrack.toml context");
+    }
+    if let Some(name) = &user.current_context {
+        return from_context(name, "current_context");
+    }
+    for (profile, source) in [
+        (&local.profile, "./dtrack.toml"),
+        (&user.profile, "user config"),
+    ] {
+        if let Some(url) = &profile.url {
+            return Ok(Connection {
+                url: Some(url.clone()),
+                key: env_key().or_else(|| profile_key(profile, None)),
+                source: Some(source),
+                ..Default::default()
+            });
+        }
+    }
+    Ok(Connection {
+        key: env_key(),
+        ..Default::default()
+    })
+}
+
 impl Settings {
     pub fn load(cli: &Cli) -> Result<Self> {
         let path = cli.config.clone().unwrap_or(user_config_path()?);
@@ -65,57 +207,30 @@ impl Settings {
         } else {
             FileConfig::default()
         };
-        let context = cli
-            .context
-            .clone()
-            .or(local.context.clone())
-            .or(user.current_context.clone());
-        let profile = context
-            .as_ref()
-            .map(|name| {
-                user.contexts
-                    .get(name)
-                    .with_context(|| format!("unknown context '{name}'"))
-            })
-            .transpose()?;
-        let profiles = [Some(&local.profile), profile, Some(&user.profile)];
-        let url = cli
-            .url
-            .clone()
-            .or_else(|| profiles.iter().flatten().find_map(|p| p.url.clone()))
-            .unwrap_or_default();
-        let api_key = cli
-            .api_key
-            .clone()
-            .or_else(|| env::var("DEPENDENCY_TRACK_API_KEY").ok())
-            .map(Ok)
-            .or_else(|| {
-                profiles.iter().flatten().find_map(|p| {
-                    if let Some(name) = &p.api_key_env {
-                        return Some(env::var(name).with_context(|| {
-                            format!("missing API key environment variable {name}")
-                        }));
-                    }
-                    if p.keyring == Some(true) {
-                        return Some(
-                            credential(context.as_deref().unwrap_or("default"))
-                                .and_then(|e| Ok(e.get_password()?)),
-                        );
-                    }
-                    p.api_key.clone().map(Ok)
-                })
-            })
-            .transpose()
-            .or_else(|error| {
-                if matches!(cli.command, Commands::Config) {
-                    Ok(None)
-                } else {
-                    Err(error)
-                }
-            })?
-            .unwrap_or_default();
-        if !matches!(cli.command, Commands::Config) {
-            crate::require_non_empty(&url, "Dependency-Track URL")?;
+        let inspecting = matches!(cli.command, Commands::Config);
+        let connection = select_connection(
+            cli.url.as_deref(),
+            cli.api_key.as_deref(),
+            cli.context.as_deref(),
+            &|name| env::var(name).ok(),
+            &local,
+            &user,
+        )?;
+        for warning in &connection.warnings {
+            eprintln!("warning: {warning}");
+        }
+        let api_key = match connection.key.as_ref().map(resolve_key).transpose() {
+            Ok(key) => key.unwrap_or_default(),
+            Err(_) if inspecting => String::new(),
+            Err(error) => return Err(error),
+        };
+        let url = connection.url.unwrap_or_default();
+        if !inspecting {
+            if url.trim().is_empty() {
+                bail!(
+                    "Dependency-Track URL is required. Run `dtrack context add NAME`, pass --context or --url, or set DTRACK_URL."
+                );
+            }
             crate::require_non_empty(&api_key, "Dependency-Track API key")?;
         }
         let base_url = if url.is_empty() {
@@ -123,10 +238,16 @@ impl Settings {
         } else {
             normalize_base_url(&url)?
         };
+        let context_profile = connection
+            .context
+            .as_ref()
+            .and_then(|name| user.contexts.get(name));
+        let profiles = [context_profile, Some(&local.profile), Some(&user.profile)];
         Ok(Self {
             base_url,
             api_key,
-            context,
+            context: connection.context,
+            connection_source: connection.source,
             project_version: cli.project_version.clone(),
             timeout: cli.timeout.unwrap_or_else(|| {
                 Duration::from_secs(
@@ -150,6 +271,7 @@ impl Settings {
     }
     pub fn safe_json(&self) -> serde_json::Value {
         json!({"baseUrl":self.base_url,"apiKeyConfigured":!self.api_key.is_empty(),"context":self.context,
+            "connectionSource":self.connection_source,
             "timeoutSeconds":self.timeout.as_secs_f64(),"retries":self.retries,"verbose":self.verbose,
             "configPath":self.config_path})
     }
@@ -171,11 +293,88 @@ pub fn normalize_base_url(input: &str) -> Result<String> {
 mod tests {
     use super::*;
     use clap::Parser;
+
+    fn files(local: &str) -> (FileConfig, FileConfig) {
+        let user = toml::from_str(
+            "current_context = 'home'\n\
+             [contexts.home]\nurl = 'https://home.example.com'\nkeyring = true\n\
+             [contexts.company]\nurl = 'https://company.example.com'\napi_key_env = 'COMPANY_KEY'\n",
+        )
+        .unwrap();
+        (toml::from_str(local).unwrap(), user)
+    }
+    fn env_with_home_key(name: &str) -> Option<String> {
+        matches!(name, "DEPENDENCY_TRACK_API_KEY" | "DTRACK_API_KEY").then(|| "home-secret".into())
+    }
+
     #[test]
     fn contexts_parse_without_plaintext_key() {
         let file: FileConfig = toml::from_str("current_context = 'home'\n[contexts.home]\nurl = 'https://dt.example.com'\nkeyring = true").unwrap();
         assert_eq!(file.current_context.as_deref(), Some("home"));
         assert_eq!(file.contexts["home"].keyring, Some(true));
+    }
+    #[test]
+    fn repository_url_cannot_redirect_selected_context() {
+        let (local, user) = files("url = 'https://evil.example.com'");
+        for context in [Some("company"), None] {
+            let connection =
+                select_connection(None, None, context, &|_| None, &local, &user).unwrap();
+            assert_ne!(connection.url.as_deref(), Some("https://evil.example.com"));
+            assert_eq!(connection.warnings.len(), 1);
+        }
+    }
+    #[test]
+    fn environment_key_is_not_sent_to_context_url() {
+        let (local, user) = files("");
+        let connection = select_connection(
+            None,
+            None,
+            Some("company"),
+            &env_with_home_key,
+            &local,
+            &user,
+        )
+        .unwrap();
+        assert_eq!(
+            connection.url.as_deref(),
+            Some("https://company.example.com")
+        );
+        assert_eq!(connection.key, Some(KeySource::Env("COMPANY_KEY".into())));
+        let connection =
+            select_connection(None, None, None, &env_with_home_key, &local, &user).unwrap();
+        assert_eq!(connection.key, Some(KeySource::Keyring("home".into())));
+    }
+    #[test]
+    fn repository_context_and_explicit_overrides() {
+        let (local, user) = files("context = 'company'");
+        let connection = select_connection(None, None, None, &|_| None, &local, &user).unwrap();
+        assert_eq!(connection.context.as_deref(), Some("company"));
+        let connection =
+            select_connection(None, Some("typed"), Some("home"), &|_| None, &local, &user).unwrap();
+        assert_eq!(connection.key, Some(KeySource::Value("typed".into())));
+        let connection = select_connection(
+            Some("https://other.example.com"),
+            None,
+            Some("home"),
+            &env_with_home_key,
+            &local,
+            &user,
+        )
+        .unwrap();
+        assert_eq!(connection.context, None);
+        assert_eq!(
+            connection.key,
+            Some(KeySource::Env("DTRACK_API_KEY".into()))
+        );
+    }
+    #[test]
+    fn legacy_flat_config_still_works() {
+        let local: FileConfig =
+            toml::from_str("url = 'https://dt.example.com'\napi_key_env = 'MY_KEY'").unwrap();
+        let connection =
+            select_connection(None, None, None, &|_| None, &local, &FileConfig::default()).unwrap();
+        assert_eq!(connection.url.as_deref(), Some("https://dt.example.com"));
+        assert_eq!(connection.key, Some(KeySource::Env("MY_KEY".into())));
     }
     #[test]
     fn explicit_defaults_remain_present() {

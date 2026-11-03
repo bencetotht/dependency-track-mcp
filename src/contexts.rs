@@ -28,15 +28,20 @@ pub async fn run(cli: &Cli, command: &ContextCommands) -> Result<()> {
             serde_json::json!({"context":name})
         }
         ContextCommands::Remove { name } => {
-            let profile = file.contexts.remove(name).context("unknown context")?;
-            if profile.keyring == Some(true) {
-                config::credential(name)?.delete_credential()?;
-            }
+            let profile = file
+                .contexts
+                .remove(name)
+                .with_context(|| format!("unknown context '{name}'"))?;
+            let credential_deleted = if profile.keyring == Some(true) {
+                delete_credential(name)
+            } else {
+                false
+            };
             if file.current_context.as_ref() == Some(name) {
                 file.current_context = None;
             }
             save = true;
-            serde_json::json!({"removed":name})
+            serde_json::json!({"removed":name,"credentialDeleted":credential_deleted})
         }
         ContextCommands::Add {
             name,
@@ -92,15 +97,17 @@ pub async fn run(cli: &Cli, command: &ContextCommands) -> Result<()> {
                 .or(cli.context.as_ref())
                 .or(file.current_context.as_ref())
                 .context("no context selected")?;
-            let p = file.contexts.get(selected).context("unknown context")?;
-            let key = if let Some(var) = &p.api_key_env {
-                std::env::var(var)?
-            } else if p.keyring == Some(true) {
-                config::credential(selected)?.get_password()?
-            } else {
-                p.api_key.clone().context("no API key")?
-            };
-            test(p.url.as_deref().context("no URL")?, &key).await?;
+            let profile = file
+                .contexts
+                .get(selected)
+                .with_context(|| format!("unknown context '{selected}'"))?;
+            let key = config::profile_key(profile, Some(selected))
+                .with_context(|| format!("context '{selected}' has no API key configured"))?;
+            let url = profile
+                .url
+                .as_deref()
+                .with_context(|| format!("context '{selected}' has no url"))?;
+            test(url, &config::resolve_key(&key)?).await?;
             serde_json::json!({"context":selected,"ok":true})
         }
     };
@@ -123,6 +130,27 @@ pub async fn run(cli: &Cli, command: &ContextCommands) -> Result<()> {
     }
     print_value(&value, cli.output)
 }
+/// Deletes a stored key. A missing entry counts as deleted; other credential
+/// store failures are reported but do not prevent removing the context.
+fn delete_credential(name: &str) -> bool {
+    match config::credential(name).and_then(|entry| Ok(entry.delete_credential()?)) {
+        Ok(()) => true,
+        Err(error)
+            if matches!(
+                error.downcast_ref::<keyring::Error>(),
+                Some(keyring::Error::NoEntry)
+            ) =>
+        {
+            true
+        }
+        Err(error) => {
+            eprintln!(
+                "warning: removed context '{name}' but could not delete its stored API key: {error:#}"
+            );
+            false
+        }
+    }
+}
 fn prompt(label: &str) -> Result<String> {
     if !io::stdin().is_terminal() {
         bail!("missing {label}; supply it with a flag in non-interactive mode");
@@ -137,17 +165,26 @@ async fn test(url: &str, key: &str) -> Result<()> {
     let http = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(30))
         .build()?;
-    http.get(format!("{url}/api/version"))
-        .header("X-Api-Key", key)
-        .send()
-        .await?
-        .error_for_status()?;
     // The version endpoint can be public. Check an authenticated endpoint as well.
-    http.get(format!("{url}/api/v1/project"))
-        .query(&[("pageSize", "1")])
-        .header("X-Api-Key", key)
-        .send()
-        .await?
-        .error_for_status()?;
+    for request in [
+        http.get(format!("{url}/api/version")),
+        http.get(format!("{url}/api/v1/project"))
+            .query(&[("pageSize", "1")]),
+    ] {
+        let response = request
+            .header("X-Api-Key", key)
+            .send()
+            .await
+            .with_context(|| format!("connecting to {url}"))?;
+        let status = response.status();
+        if !status.is_success() {
+            let path = response.url().path().to_owned();
+            let body = response.text().await.unwrap_or_default();
+            bail!(
+                "connection test failed: GET {path} returned {status} {}",
+                body.trim()
+            );
+        }
+    }
     Ok(())
 }

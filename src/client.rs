@@ -9,7 +9,7 @@ use crate::cli::ProjectListArgs;
 use crate::config::Settings;
 use crate::git::{find_git_root, get_git_remote_url, normalize_git_remote_url};
 use crate::models::{
-    DetectedProject, FpfDocument, Metrics, Project, ProjectProperty, ResolvedProject, Vulnerability,
+    DetectedProject, Finding, Metrics, Project, ProjectProperty, ResolvedProject, Vulnerability,
 };
 
 #[derive(Clone)]
@@ -64,11 +64,56 @@ impl DependencyTrackClient {
         self.get("/api/v1/metrics/portfolio/current").await
     }
 
-    pub async fn findings_export(&self, uuid: &str) -> Result<Vec<crate::models::Finding>> {
-        let document: FpfDocument = self
-            .get(&format!("/api/v1/finding/project/{uuid}/export"))
-            .await?;
-        Ok(document.findings)
+    /// Findings for a project. The FPF export endpoint never includes
+    /// suppressed findings, so this uses the findings endpoint instead.
+    pub async fn findings(&self, uuid: &str, include_suppressed: bool) -> Result<Vec<Finding>> {
+        self.get_query(
+            &format!("/api/v1/finding/project/{uuid}"),
+            &[("suppressed", include_suppressed.to_string())],
+        )
+        .await
+    }
+
+    /// Locates exactly one finding (suppressed or not) for triage.
+    pub async fn resolve_finding(
+        &self,
+        project: &Project,
+        component: &str,
+        vulnerability: &str,
+    ) -> Result<Finding> {
+        let findings = self.findings(&project.uuid, true).await?;
+        let mut matches: Vec<Finding> = findings
+            .into_iter()
+            .filter(|finding| {
+                finding.matches_component(component) && finding.matches_vulnerability(vulnerability)
+            })
+            .collect();
+        match matches.len() {
+            0 => bail!(
+                "no finding for component '{component}' and vulnerability '{vulnerability}' in project {} {} (suppressed findings included)",
+                project.name,
+                project.version.as_deref().unwrap_or("")
+            ),
+            1 => Ok(matches.remove(0)),
+            _ => {
+                let names = matches
+                    .iter()
+                    .map(|finding| {
+                        format!(
+                            "{}@{} {} ({})",
+                            finding.component_name(),
+                            finding.component_version(),
+                            finding.component_purl(),
+                            finding.component_uuid()
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join("; ");
+                bail!(
+                    "'{component}' matches several components affected by '{vulnerability}'; pass a PURL or component UUID. Matches: {names}"
+                )
+            }
+        }
     }
 
     pub async fn vulnerability(&self, source: &str, vulnerability: &str) -> Result<Vulnerability> {
@@ -123,14 +168,6 @@ impl DependencyTrackClient {
         })
     }
 
-    pub fn with_version(&self, version: Option<String>) -> Self {
-        let mut client = self.clone();
-        if version.is_some() {
-            client.settings.project_version = version;
-        }
-        client
-    }
-
     pub async fn resolve_project(&self, identifier: &str) -> Result<Project> {
         if looks_like_uuid(identifier) {
             return self.project(identifier).await;
@@ -181,6 +218,24 @@ impl DependencyTrackClient {
         if candidates.len() == 1 {
             return Ok(candidates.remove(0));
         }
+        // Several versions of one project: default to the one marked latest.
+        let single_name = candidates
+            .iter()
+            .all(|p| p.name.eq_ignore_ascii_case(&candidates[0].name));
+        let mut latest = candidates.iter().filter(|p| p.is_latest == Some(true));
+        if single_name
+            && self.settings.project_version.is_none()
+            && let (Some(project), None) = (latest.next(), latest.next())
+        {
+            if self.settings.verbose {
+                eprintln!(
+                    "using latest version {} of {}; pass --project-version to choose another",
+                    project.version.as_deref().unwrap_or(""),
+                    project.name
+                );
+            }
+            return Ok(project.clone());
+        }
         let names = candidates
             .iter()
             .take(10)
@@ -223,13 +278,29 @@ impl DependencyTrackClient {
         }))
         .buffered(8);
         let mut matches = Vec::new();
+        let mut failed = 0;
         while let Some((project, properties)) = pending.next().await {
-            let properties = properties
-                .with_context(|| format!("loading properties for project {}", project.uuid))?;
+            let properties = match properties {
+                Ok(properties) => properties,
+                Err(error) => {
+                    failed += 1;
+                    if self.settings.verbose {
+                        eprintln!("skipping project {}: {error:#}", project.uuid);
+                    }
+                    Vec::new()
+                }
+            };
             if let Some(source) = match_project_remote(&project, &properties, &remote_url) {
                 matches.push((project, properties, source));
             }
         }
+        let incomplete = if failed > 0 {
+            format!(
+                " Properties could not be loaded for {failed} project(s); rerun with --verbose for details."
+            )
+        } else {
+            String::new()
+        };
         if let Some(version) = &self.settings.project_version {
             matches.retain(|(p, _, _)| p.version.as_ref() == Some(version));
         }
@@ -239,6 +310,9 @@ impl DependencyTrackClient {
                 .then(b.0.last_bom_import.cmp(&a.0.last_bom_import))
         });
         if let Some((project, properties, match_source)) = matches.into_iter().next() {
+            if failed > 0 {
+                eprintln!("warning: detection may be incomplete.{incomplete}");
+            }
             return Ok(DetectedProject {
                 project,
                 properties,
@@ -249,8 +323,9 @@ impl DependencyTrackClient {
         }
 
         bail!(
-            "no Dependency-Track project matched git remote '{}'. Add a project property such as automation.cloneUrl, automation.repositoryUrl, repo.cloneUrl, repo.repositoryUrl, vcs.cloneUrl, or a Git external reference.",
-            remote_url
+            "no Dependency-Track project matched git remote '{}'. Add a project property such as automation.cloneUrl, automation.repositoryUrl, repo.cloneUrl, repo.repositoryUrl, vcs.cloneUrl, or a Git external reference.{}",
+            remote_url,
+            incomplete
         );
     }
 
@@ -262,7 +337,8 @@ impl DependencyTrackClient {
             query.retain(|(key, _)| *key != "pageSize");
             query.push(("pageSize", "500".into()));
             query.push(("pageNumber", page.to_string()));
-            let batch: Vec<Project> = self.get_query(path, &query).await?;
+            let (batch, total): (Vec<Project>, _) =
+                self.request_with_total(Method::GET, path, &query).await?;
             let count = batch.len();
             if count > 0
                 && batch
@@ -272,7 +348,13 @@ impl DependencyTrackClient {
                 bail!("server ignored pagination for {path}");
             }
             all.extend(batch);
-            if count < 500 {
+            // Some endpoints (such as affected projects) ignore paging but send
+            // the full list with its X-Total-Count.
+            let done = match total {
+                Some(total) => all.len() >= total,
+                None => count < 500,
+            };
+            if done || count == 0 {
                 return Ok(all);
             }
             page += 1;
@@ -301,21 +383,34 @@ impl DependencyTrackClient {
         path: &str,
         body: Option<serde_json::Value>,
     ) -> Result<serde_json::Value> {
+        let method = if body.is_some() {
+            Method::PUT
+        } else {
+            Method::POST
+        };
         let mut request = self
             .http
-            .request(
-                if body.is_some() {
-                    Method::PUT
-                } else {
-                    Method::POST
-                },
-                format!("{}{path}", self.settings.base_url),
-            )
+            .request(method.clone(), format!("{}{path}", self.settings.base_url))
+            .header("Accept", "application/json")
             .header("X-Api-Key", &self.settings.api_key);
         if let Some(body) = body {
             request = request.json(&body);
         }
-        let response = request.send().await?.error_for_status()?;
+        if self.settings.verbose {
+            eprintln!("{method} {path} (not retried)");
+        }
+        let response = request
+            .send()
+            .await
+            .with_context(|| format!("Dependency-Track request failed: {method} {path}"))?;
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_default();
+            bail!(
+                "Dependency-Track request failed: {method} {path} returned {status} {}",
+                body.trim()
+            );
+        }
         let bytes = response.bytes().await?;
         if bytes.is_empty() {
             Ok(serde_json::json!({"accepted":true}))
@@ -342,6 +437,15 @@ impl DependencyTrackClient {
         path: &str,
         query: &[(&str, String)],
     ) -> Result<T> {
+        Ok(self.request_with_total(method, path, query).await?.0)
+    }
+
+    async fn request_with_total<T: DeserializeOwned>(
+        &self,
+        method: Method,
+        path: &str,
+        query: &[(&str, String)],
+    ) -> Result<(T, Option<usize>)> {
         let url = format!("{}{}", self.settings.base_url, path);
         let mut attempt = 0;
         loop {
@@ -360,9 +464,15 @@ impl DependencyTrackClient {
 
             match response {
                 Ok(response) if response.status().is_success() => {
-                    return response.json::<T>().await.with_context(|| {
+                    let total = response
+                        .headers()
+                        .get("X-Total-Count")
+                        .and_then(|value| value.to_str().ok())
+                        .and_then(|value| value.trim().parse().ok());
+                    let value = response.json::<T>().await.with_context(|| {
                         format!("failed to decode Dependency-Track response for {path}")
-                    });
+                    })?;
+                    return Ok((value, total));
                 }
                 Ok(response) => {
                     let status = response.status();
@@ -371,7 +481,7 @@ impl DependencyTrackClient {
                         && status == StatusCode::NOT_FOUND
                         && body.trim() == "No analysis exists."
                     {
-                        return Ok(serde_json::from_value(serde_json::json!({}))?);
+                        return Ok((serde_json::from_value(serde_json::json!({}))?, None));
                     }
                     if should_retry(status) && attempt <= self.settings.retries {
                         self.retry_delay(attempt).await;
@@ -502,18 +612,48 @@ fn property_key(property: &ProjectProperty) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    fn mock(responses: Vec<(u16, String)>) -> (DependencyTrackClient, std::thread::JoinHandle<()>) {
+
+    /// One canned HTTP response; `headers` are extra raw header lines.
+    struct Reply(u16, &'static str, String);
+
+    /// Serves `replies` in order and returns every raw request it received.
+    fn mock_with(
+        replies: Vec<Reply>,
+        project_version: Option<&str>,
+    ) -> (DependencyTrackClient, std::thread::JoinHandle<Vec<String>>) {
         use std::io::{Read, Write};
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let base_url = format!("http://{}", listener.local_addr().unwrap());
         let task = std::thread::spawn(move || {
-            for (status, body) in responses {
+            let mut requests = Vec::new();
+            for Reply(status, headers, body) in replies {
                 let (mut socket, _) = listener.accept().unwrap();
+                let mut request = Vec::new();
                 let mut buffer = [0; 8192];
-                let count = socket.read(&mut buffer).unwrap();
-                assert!(count > 0);
-                write!(socket, "HTTP/1.1 {status} Test\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
+                // Read until the headers and the full Content-Length body arrived.
+                loop {
+                    let count = socket.read(&mut buffer).unwrap();
+                    request.extend_from_slice(&buffer[..count]);
+                    let text = String::from_utf8_lossy(&request);
+                    if let Some(split) = text.find("\r\n\r\n") {
+                        let length = text[..split]
+                            .lines()
+                            .find_map(|line| {
+                                line.to_ascii_lowercase()
+                                    .strip_prefix("content-length:")
+                                    .map(|value| value.trim().parse::<usize>().unwrap())
+                            })
+                            .unwrap_or(0);
+                        if request.len() >= split + 4 + length {
+                            break;
+                        }
+                    }
+                    assert!(count > 0, "client closed connection early");
+                }
+                requests.push(String::from_utf8_lossy(&request).into_owned());
+                write!(socket, "HTTP/1.1 {status} Test\r\n{headers}Content-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
             }
+            requests
         });
         (
             DependencyTrackClient::new(Settings {
@@ -524,10 +664,22 @@ mod tests {
                 verbose: false,
                 config_path: None,
                 context: None,
-                project_version: None,
+                connection_source: None,
+                project_version: project_version.map(str::to_owned),
             })
             .unwrap(),
             task,
+        )
+    }
+    fn mock(
+        responses: Vec<(u16, String)>,
+    ) -> (DependencyTrackClient, std::thread::JoinHandle<Vec<String>>) {
+        mock_with(
+            responses
+                .into_iter()
+                .map(|(status, body)| Reply(status, "", body))
+                .collect(),
+            None,
         )
     }
     #[tokio::test]
@@ -537,6 +689,22 @@ mod tests {
             r#"[{"uuid":"a","name":"ds-image","isLatest":true},{"uuid":"b","name":"ds"}]"#.into(),
         )]);
         assert_eq!(client.resolve_project("ds").await.unwrap().uuid, "b");
+        task.join().unwrap();
+    }
+    #[tokio::test]
+    async fn several_versions_default_to_latest_unless_version_given() {
+        let body = r#"[{"uuid":"old","name":"ds","version":"a1"},{"uuid":"new","name":"ds","version":"b2","isLatest":true}]"#;
+        let (client, task) = mock(vec![(200, body.into())]);
+        assert_eq!(client.resolve_project("ds").await.unwrap().uuid, "new");
+        task.join().unwrap();
+        let (client, task) = mock_with(vec![Reply(200, "", body.into())], Some("a1"));
+        assert_eq!(client.resolve_project("ds").await.unwrap().uuid, "old");
+        task.join().unwrap();
+        let ambiguous =
+            r#"[{"uuid":"x","name":"ds","version":"a1"},{"uuid":"y","name":"ds","version":"b2"}]"#;
+        let (client, task) = mock(vec![(200, ambiguous.into())]);
+        let error = client.resolve_project("ds").await.unwrap_err().to_string();
+        assert!(error.contains("ambiguous"), "{error}");
         task.join().unwrap();
     }
     #[tokio::test]
@@ -568,5 +736,80 @@ mod tests {
             501
         );
         task.join().unwrap();
+    }
+    #[tokio::test]
+    async fn unpaged_endpoint_stops_at_total_count() {
+        let all = serde_json::Value::Array(
+            (0..500)
+                .map(|i| serde_json::json!({"uuid":i.to_string(),"name":"test"}))
+                .collect(),
+        );
+        let (client, task) = mock_with(
+            vec![Reply(200, "X-Total-Count: 500\r\n", all.to_string())],
+            None,
+        );
+        let projects = client
+            .vulnerability_projects("NVD", "CVE-2021-44228", false)
+            .await
+            .unwrap();
+        assert_eq!(projects.len(), 500);
+        assert_eq!(task.join().unwrap().len(), 1);
+    }
+    #[tokio::test]
+    async fn findings_request_includes_suppressed_flag() {
+        let (client, task) = mock(vec![(200, "[]".into())]);
+        client.findings("p", true).await.unwrap();
+        let requests = task.join().unwrap();
+        assert!(requests[0].starts_with("GET /api/v1/finding/project/p?suppressed=true "));
+    }
+    #[tokio::test]
+    async fn triage_finding_is_resolved_by_name_and_alias() {
+        let findings = r#"[
+            {"component":{"uuid":"c1","name":"lodash","version":"4.17.20","purl":"pkg:npm/lodash@4.17.20"},
+             "vulnerability":{"uuid":"v1","vulnId":"GHSA-35jh-r3h4-6jhm","aliases":[{"cveId":"CVE-2021-23337"}]}},
+            {"component":{"uuid":"c2","name":"lodash","version":"4.17.15","purl":"pkg:npm/lodash@4.17.15?x=y"},
+             "vulnerability":{"uuid":"v1","vulnId":"GHSA-35jh-r3h4-6jhm"}}
+        ]"#;
+        let project: Project =
+            serde_json::from_value(serde_json::json!({"uuid":"p","name":"app"})).unwrap();
+        let (client, task) = mock(vec![(200, findings.into()); 3]);
+        let finding = client
+            .resolve_finding(&project, "lodash@4.17.20", "cve-2021-23337")
+            .await
+            .unwrap();
+        assert_eq!(
+            (finding.component_uuid(), finding.vulnerability_uuid()),
+            ("c1", "v1")
+        );
+        let finding = client
+            .resolve_finding(&project, "pkg:npm/lodash@4.17.15", "GHSA-35jh-r3h4-6jhm")
+            .await
+            .unwrap();
+        assert_eq!(finding.component_uuid(), "c2");
+        let error = client
+            .resolve_finding(&project, "lodash", "GHSA-35jh-r3h4-6jhm")
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("several components"), "{error}");
+        task.join().unwrap();
+    }
+    #[tokio::test]
+    async fn write_errors_include_server_message() {
+        let (client, task) = mock(vec![(
+            400,
+            "The component must be a valid 36 character UUID".into(),
+        )]);
+        let error = client
+            .write("/api/v1/analysis", Some(serde_json::json!({})))
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("PUT /api/v1/analysis returned 400"),
+            "{error}"
+        );
+        assert!(error.contains("valid 36 character UUID"), "{error}");
+        assert_eq!(task.join().unwrap().len(), 1, "writes must not be retried");
     }
 }
