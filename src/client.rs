@@ -674,6 +674,7 @@ mod tests {
             DependencyTrackClient::new(Settings {
                 base_url,
                 api_key: "test".into(),
+                api_key_configured: true,
                 timeout: Duration::from_secs(2),
                 retries: 2,
                 verbose: false,

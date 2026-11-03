@@ -198,6 +198,22 @@ Keyring). Headless Linux can use `--api-key-env HOME_DT_KEY` instead.
 `--api-key-stdin` accepts a piped key; keys are never saved by these commands
 in TOML. Fully specified commands do not prompt.
 
+On macOS the Keychain is accessed through Apple's `/usr/bin/security`, so
+choosing "Always Allow" once is remembered across `dtrack` rebuilds. Keys stored
+by older versions ask once more; choose "Always Allow". Any process running as
+your user can read the key through `security` without a prompt. If you want
+stricter access, use a secret manager instead:
+
+```sh
+dtrack context add work --url https://dt.example.com \
+  --api-key-command 'op read op://Private/dtrack/credential'
+```
+
+The command runs with `sh -c` on every invocation, and its trimmed stdout is the
+key. Only the command is saved, as `api_key_command` in the user config. Commands
+are honoured only for contexts in the user config, never from a repository
+`dtrack.toml`.
+
 Manage installations with `context list`, `context use NAME`,
 `context current`, `context remove NAME`, and `context test [NAME]`.
 Select one per invocation with `-c NAME` or `DTRACK_CONTEXT`.

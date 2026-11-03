@@ -14,6 +14,7 @@ pub struct Profile {
     pub url: Option<String>,
     pub api_key: Option<String>,
     pub api_key_env: Option<String>,
+    pub api_key_command: Option<String>,
     pub keyring: Option<bool>,
     pub timeout_seconds: Option<u64>,
     pub retries: Option<u32>,
@@ -31,6 +32,7 @@ pub struct FileConfig {
 pub struct Settings {
     pub base_url: String,
     pub api_key: String,
+    pub api_key_configured: bool,
     pub timeout: Duration,
     pub retries: u32,
     pub verbose: bool,
@@ -46,6 +48,7 @@ pub struct Settings {
 pub enum KeySource {
     Value(String),
     Env(String),
+    Command(String),
     Keyring(String),
 }
 
@@ -69,18 +72,20 @@ pub fn read_config(path: &Path) -> Result<FileConfig> {
     )
     .with_context(|| format!("parsing {}", path.display()))
 }
-pub fn credential(name: &str) -> Result<keyring::Entry> {
-    Ok(keyring::Entry::new("dtrack", name)?)
-}
-
-/// The key configured for a profile. Contexts may use the OS credential store;
-/// legacy flat profiles (`name == None`) cannot.
+/// The key configured for a profile. Contexts may use a command or the OS
+/// credential store; legacy flat profiles (`name == None`) cannot, so a
+/// repository dtrack.toml can never make the CLI run a command.
 pub fn profile_key(profile: &Profile, name: Option<&str>) -> Option<KeySource> {
     if let Some(var) = &profile.api_key_env {
         return Some(KeySource::Env(var.clone()));
     }
-    if let (Some(true), Some(name)) = (profile.keyring, name) {
-        return Some(KeySource::Keyring(name.to_owned()));
+    if let Some(name) = name {
+        if let Some(command) = &profile.api_key_command {
+            return Some(KeySource::Command(command.clone()));
+        }
+        if profile.keyring == Some(true) {
+            return Some(KeySource::Keyring(name.to_owned()));
+        }
     }
     profile.api_key.clone().map(KeySource::Value)
 }
@@ -90,10 +95,30 @@ pub fn resolve_key(key: &KeySource) -> Result<String> {
         KeySource::Value(value) => Ok(value.clone()),
         KeySource::Env(name) => env::var(name)
             .with_context(|| format!("API key environment variable {name} is not set")),
-        KeySource::Keyring(name) => credential(name)?.get_password().with_context(|| {
+        KeySource::Command(command) => run_key_command(command),
+        KeySource::Keyring(name) => crate::credentials::get(name).with_context(|| {
             format!("reading API key for context '{name}' from the OS credential store")
         }),
     }
+}
+
+/// Runs an `api_key_command` with `sh -c` and returns its trimmed stdout.
+/// Stdin and stderr are inherited so secret managers can prompt.
+fn run_key_command(command: &str) -> Result<String> {
+    let output = std::process::Command::new("sh")
+        .args(["-c", command])
+        .stderr(std::process::Stdio::inherit())
+        .output()
+        .with_context(|| format!("running api_key_command `{command}`"))?;
+    if !output.status.success() {
+        bail!("api_key_command `{command}` failed with {}", output.status);
+    }
+    let key = String::from_utf8(output.stdout).context("api_key_command output is not UTF-8")?;
+    let key = key.trim();
+    if key.is_empty() {
+        bail!("api_key_command `{command}` printed nothing");
+    }
+    Ok(key.to_owned())
 }
 
 /// Picks the URL and API key for this invocation. The first matching source
@@ -219,10 +244,17 @@ impl Settings {
         for warning in &connection.warnings {
             eprintln!("warning: {warning}");
         }
-        let api_key = match connection.key.as_ref().map(resolve_key).transpose() {
-            Ok(key) => key.unwrap_or_default(),
-            Err(_) if inspecting => String::new(),
-            Err(error) => return Err(error),
+        // `dtrack config` never needs the key itself, so it does not touch
+        // the credential store or run a command.
+        let api_key_configured = match &connection.key {
+            Some(KeySource::Env(name)) => env::var(name).is_ok_and(|v| !v.trim().is_empty()),
+            Some(KeySource::Value(value)) => !value.trim().is_empty(),
+            Some(_) => true,
+            None => false,
+        };
+        let api_key = match &connection.key {
+            Some(key) if !inspecting => resolve_key(key)?,
+            _ => String::new(),
         };
         let url = connection.url.unwrap_or_default();
         if !inspecting {
@@ -246,6 +278,7 @@ impl Settings {
         Ok(Self {
             base_url,
             api_key,
+            api_key_configured,
             context: connection.context,
             connection_source: connection.source,
             project_version: cli.project_version.clone(),
@@ -270,7 +303,7 @@ impl Settings {
         })
     }
     pub fn safe_json(&self) -> serde_json::Value {
-        json!({"baseUrl":self.base_url,"apiKeyConfigured":!self.api_key.is_empty(),"context":self.context,
+        json!({"baseUrl":self.base_url,"apiKeyConfigured":self.api_key_configured,"context":self.context,
             "connectionSource":self.connection_source,
             "timeoutSeconds":self.timeout.as_secs_f64(),"retries":self.retries,"verbose":self.verbose,
             "configPath":self.config_path})
@@ -366,6 +399,33 @@ mod tests {
             connection.key,
             Some(KeySource::Env("DTRACK_API_KEY".into()))
         );
+    }
+    #[test]
+    fn key_command_is_only_used_for_contexts() {
+        let user: FileConfig = toml::from_str(
+            "[contexts.op]\nurl = 'https://dt.example.com'\napi_key_command = 'printf \"  key\\n\"'\n",
+        )
+        .unwrap();
+        let connection = select_connection(
+            None,
+            None,
+            Some("op"),
+            &|_| None,
+            &FileConfig::default(),
+            &user,
+        )
+        .unwrap();
+        let key = connection.key.unwrap();
+        assert_eq!(key, KeySource::Command("printf \"  key\\n\"".into()));
+        assert_eq!(resolve_key(&key).unwrap(), "key");
+        assert!(resolve_key(&KeySource::Command("false".into())).is_err());
+        assert!(resolve_key(&KeySource::Command("true".into())).is_err());
+        let local: FileConfig =
+            toml::from_str("url = 'https://dt.example.com'\napi_key_command = 'touch pwned'")
+                .unwrap();
+        let connection =
+            select_connection(None, None, None, &|_| None, &local, &FileConfig::default()).unwrap();
+        assert_eq!(connection.key, None);
     }
     #[test]
     fn legacy_flat_config_still_works() {

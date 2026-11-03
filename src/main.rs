@@ -2,6 +2,7 @@ mod cli;
 mod client;
 mod config;
 mod contexts;
+mod credentials;
 mod git;
 mod models;
 mod output;

@@ -125,7 +125,7 @@ pub enum Commands {
 
     #[command(
         about = "Add, select, test, and remove named Dependency-Track installations",
-        long_about = "Manage named Dependency-Track installations (contexts). Each context stores a URL plus an API key in the OS credential store (macOS Keychain, Linux Secret Service) or a reference to an environment variable. Select one per command with -c NAME or DTRACK_CONTEXT, per repository with `context = \"NAME\"` in dtrack.toml, or by default with `dtrack context use NAME`."
+        long_about = "Manage named Dependency-Track installations (contexts). Each context stores a URL plus an API key in the OS credential store (macOS Keychain, Linux Secret Service), a reference to an environment variable, or a command that prints the key. Select one per command with -c NAME or DTRACK_CONTEXT, per repository with `context = \"NAME\"` in dtrack.toml, or by default with `dtrack context use NAME`."
     )]
     Context {
         #[command(subcommand)]
@@ -422,7 +422,7 @@ pub enum FindingSort {
 pub enum ContextCommands {
     #[command(
         about = "Add a context; prompts for missing URL and API key in a terminal",
-        long_about = "Add a named Dependency-Track installation. Missing --url and API key values are prompted for when stdin is a terminal (the key is read hidden); non-interactive callers must pass them. The connection is tested before anything is saved. Keys are stored in the OS credential store unless --api-key-env is used, in which case only the variable name is saved. The first context added becomes the current context."
+        long_about = "Add a named Dependency-Track installation. Missing --url and API key values are prompted for when stdin is a terminal (the key is read hidden); non-interactive callers must pass them. The connection is tested before anything is saved. Keys are stored in the OS credential store unless --api-key-env or --api-key-command is used, in which case only the variable name or command is saved. The first context added becomes the current context."
     )]
     Add {
         #[arg(help = "Context name, for example home-dep-track")]
@@ -440,6 +440,12 @@ pub enum ContextCommands {
             help = "Read the API key from this environment variable at run time instead of storing it"
         )]
         api_key_env: Option<String>,
+        #[arg(
+            long,
+            conflicts_with_all = ["api_key", "api_key_env", "api_key_stdin"],
+            help = "Run this shell command at run time to print the API key instead of storing it, for example `op read op://dev/dtrack/key`"
+        )]
+        api_key_command: Option<String>,
         #[arg(
             long,
             conflicts_with = "api_key",

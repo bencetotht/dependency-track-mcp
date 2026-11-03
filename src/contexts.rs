@@ -48,6 +48,7 @@ pub async fn run(cli: &Cli, command: &ContextCommands) -> Result<()> {
             url,
             api_key,
             api_key_env,
+            api_key_command,
             api_key_stdin,
         } => {
             if file.contexts.contains_key(name) {
@@ -59,6 +60,8 @@ pub async fn run(cli: &Cli, command: &ContextCommands) -> Result<()> {
             })?;
             let key = if let Some(var) = api_key_env {
                 std::env::var(var).context("API key environment variable is not set")?
+            } else if let Some(command) = api_key_command {
+                config::resolve_key(&config::KeySource::Command(command.clone()))?
             } else if *api_key_stdin {
                 let mut key = String::new();
                 io::stdin().read_to_string(&mut key)?;
@@ -73,15 +76,17 @@ pub async fn run(cli: &Cli, command: &ContextCommands) -> Result<()> {
             };
             crate::require_non_empty(&key, "API key")?;
             test(&url, &key).await?;
-            if api_key_env.is_none() {
-                config::credential(name)?.set_password(&key).context("could not store key in OS credential store; use --api-key-env on headless Linux")?;
+            let store = api_key_env.is_none() && api_key_command.is_none();
+            if store {
+                crate::credentials::set(name, &key).context("could not store key in OS credential store; use --api-key-env or --api-key-command on headless Linux")?;
             }
             file.contexts.insert(
                 name.clone(),
                 Profile {
                     url: Some(url),
                     api_key_env: api_key_env.clone(),
-                    keyring: Some(api_key_env.is_none()),
+                    api_key_command: api_key_command.clone(),
+                    keyring: Some(store),
                     ..Default::default()
                 },
             );
@@ -133,16 +138,8 @@ pub async fn run(cli: &Cli, command: &ContextCommands) -> Result<()> {
 /// Deletes a stored key. A missing entry counts as deleted; other credential
 /// store failures are reported but do not prevent removing the context.
 fn delete_credential(name: &str) -> bool {
-    match config::credential(name).and_then(|entry| Ok(entry.delete_credential()?)) {
+    match crate::credentials::delete(name) {
         Ok(()) => true,
-        Err(error)
-            if matches!(
-                error.downcast_ref::<keyring::Error>(),
-                Some(keyring::Error::NoEntry)
-            ) =>
-        {
-            true
-        }
         Err(error) => {
             eprintln!(
                 "warning: removed context '{name}' but could not delete its stored API key: {error:#}"
