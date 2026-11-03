@@ -1,6 +1,6 @@
 # Dependency-Track CLI
 
-`dtrack` is a read-only Rust CLI for querying Dependency-Track from a terminal or an AI agent workflow. It replaces the old MCP-oriented toolkit with direct commands that agents can discover through `--help`, execute safely, and parse as JSON.
+`dtrack` is a Rust CLI for querying Dependency-Track from a terminal or an AI agent workflow. It replaces the old MCP-oriented toolkit with direct commands that agents can discover through `--help`, execute safely, and parse as JSON.
 
 The CLI focuses on the Dependency-Track API areas that are useful during vulnerability remediation:
 
@@ -137,3 +137,68 @@ cargo run -- --url https://dt.bencetotht.hu --output json projects list --active
 
 The CLI uses Dependency-Track's documented OpenAPI endpoints under `/api/v1`. The public Dependency-Track docs note that the OpenAPI spec is served by the backend at `/api/openapi.json` or `/api/openapi.yaml`.
 
+
+## Contexts and credentials
+
+Install from a checkout with `cargo install --path . --locked`. Release binaries
+are built by the Rust CI workflow for Linux and macOS.
+
+`dtrack context add home --url https://dt.example.com` prompts for a hidden key,
+validates the connection, and stores the key in macOS Keychain or Linux Secret
+Service. Linux desktops need a running, unlocked Secret Service (such as GNOME
+Keyring). Headless Linux can use `--api-key-env HOME_DT_KEY` instead.
+`--api-key-stdin` accepts a piped key; keys are never saved by these commands
+in TOML. Fully specified commands do not prompt.
+
+Manage installations with `context list`, `context use NAME`,
+`context current`, `context remove NAME`, and `context test [NAME]`.
+Select one per invocation with `-c NAME` or `DTRACK_CONTEXT`.
+A repository's `dtrack.toml` may contain `context = "company"`.
+
+The URL and API key always come from the same place, so a key is only ever sent
+to the server it belongs to. The first match wins:
+
+1. `--url` (key from `--api-key`, `DTRACK_API_KEY`, or `DEPENDENCY_TRACK_API_KEY`)
+2. `-c NAME` / `DTRACK_CONTEXT`
+3. `DTRACK_URL` (key from `--api-key` or the API key environment variables)
+4. `context = "NAME"` in the repository `dtrack.toml`
+5. `current_context` from the user config
+6. legacy flat `url` in the repository `dtrack.toml`, then in the user config
+
+While a context is selected, `DTRACK_API_KEY`, `DEPENDENCY_TRACK_API_KEY`, and a
+repository `url` are ignored (a warning is printed for the latter); only an
+explicit `--api-key` overrides the context's key. Repositories should name a
+context rather than a URL. Timeouts and retries come from flags, then the
+context, then the repository file, then the user config.
+`dtrack config` shows which source was used as `connectionSource`.
+
+The user config is `~/Library/Application Support/dtrack/config.toml` on macOS
+and `$XDG_CONFIG_HOME/dtrack/config.toml` (normally
+`~/.config/dtrack/config.toml`) on Linux. `--config` selects an alternative
+file for both context management and command execution.
+`dtrack config` works without a URL or key and never displays credentials.
+
+## Record triage and reanalyze
+
+Exact project names take priority over partial matches. When a name has several
+versions, the one marked latest is used; select another with the global
+`--project-version VERSION` or pass a project UUID.
+
+```sh
+dtrack findings triage PROJECT --component lodash --vulnerability CVE-2021-23337 \
+  --state NOT_AFFECTED --justification CODE_NOT_REACHABLE \
+  --details "Only _.get is imported; template() is never called" \
+  --suppressed true --comment "Reviewed in PR #42"
+dtrack projects reanalyze PROJECT
+```
+
+`--component` accepts a name, `name@version`, PURL, or component UUID;
+`--vulnerability` accepts a vulnerability ID, an alias (such as the CVE behind a
+GHSA), or a UUID. Suppressed findings are included, so a finding can be
+unsuppressed. If several components match, pass the PURL. Triage also accepts
+`--response` (for example `UPDATE` or `WILL_NOT_FIX`) and preserves existing
+fields you did not specify. Triage needs the VULNERABILITY_ANALYSIS permission;
+reanalysis needs VIEW_VULNERABILITY. Reanalysis is asynchronous:
+acceptance does not mean processing has finished. Writes are not automatically
+retried, to avoid duplicate audit comments. Read retries mean additional attempts:
+`--retries 2` makes at most three requests.

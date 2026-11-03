@@ -184,3 +184,19 @@ Ask the user before proceeding when:
 - the finding appears false positive but suppressing or documenting it is outside the requested scope;
 - required registry, package manager, or test credentials are unavailable;
 - local verification cannot be run and the change would be risky without it.
+
+## Multiple installations and server triage
+
+Use `-c NAME` / `DTRACK_CONTEXT`, or a repository `context = "NAME"`.
+Use `context add` for Keychain (macOS) / Secret Service (Linux) storage;
+headless agents should use `--api-key-env VARIABLE`. Never place keys in a PR.
+Without a version, the project version marked latest is used; pick another
+with `--project-version VERSION` or a UUID.
+
+After validating a decision, record it with `findings triage PROJECT
+--component PACKAGE_OR_PURL --vulnerability CVE_OR_GHSA --state NOT_AFFECTED
+--justification CODE_NOT_REACHABLE --details "Evidence" --suppressed true
+--comment "Link to PR or review"`. If several versions of a package match, pass
+the PURL from `findings ls`. Suppression requires a reason based on actual
+investigation. After uploading a corrected BOM, `projects reanalyze
+PROJECT` queues analysis; verify findings again after server processing.

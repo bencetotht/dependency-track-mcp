@@ -207,18 +207,57 @@ impl Finding {
             .unwrap_or("UNTRIAGED")
     }
 
+    pub fn component_uuid(&self) -> &str {
+        self.component
+            .get("uuid")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+    }
+
+    pub fn vulnerability_uuid(&self) -> &str {
+        self.vulnerability
+            .get("uuid")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+    }
+
+    /// Matches a component UUID, PURL (with or without qualifiers), name, or name@version.
+    pub fn matches_component(&self, query: &str) -> bool {
+        let query = query.trim();
+        let purl = self.component_purl();
+        let name = self.component_name();
+        (!self.component_uuid().is_empty() && self.component_uuid().eq_ignore_ascii_case(query))
+            || (!purl.is_empty() && (purl == query || purl.split(['?', '#']).next() == Some(query)))
+            || (!name.is_empty() && name.eq_ignore_ascii_case(query))
+            || format!("{name}@{}", self.component_version()).eq_ignore_ascii_case(query)
+    }
+
+    /// Matches a vulnerability UUID, ID, or alias such as the CVE behind a GHSA.
+    pub fn matches_vulnerability(&self, query: &str) -> bool {
+        let query = query.trim();
+        let uuid = self.vulnerability_uuid();
+        if (!uuid.is_empty() && uuid.eq_ignore_ascii_case(query))
+            || self.vulnerability_id().eq_ignore_ascii_case(query)
+        {
+            return true;
+        }
+        self.vulnerability
+            .get("aliases")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_object)
+            .flat_map(|alias| alias.values())
+            .filter_map(Value::as_str)
+            .any(|alias| alias.eq_ignore_ascii_case(query))
+    }
+
     pub fn is_suppressed(&self) -> bool {
         self.analysis
             .get("isSuppressed")
             .and_then(Value::as_bool)
             .unwrap_or(false)
     }
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct FpfDocument {
-    #[serde(default)]
-    pub findings: Vec<Finding>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

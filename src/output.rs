@@ -15,7 +15,7 @@ pub fn print_value(value: &Value, output: OutputFormat) -> Result<()> {
     match output {
         OutputFormat::Json => print_json(value),
         OutputFormat::Human => {
-            println!("{}", serde_json::to_string_pretty(value)?);
+            render_human(value, 0);
             Ok(())
         }
     }
@@ -200,4 +200,42 @@ fn trim_for_table(value: &str, limit: usize) -> String {
         .collect::<String>();
     trimmed.push_str("...");
     trimmed
+}
+
+fn render_human(value: &Value, depth: usize) {
+    let indent = "  ".repeat(depth);
+    match value {
+        Value::Object(fields) => {
+            for (key, value) in fields {
+                if value.is_null() {
+                    continue;
+                }
+                if value.is_object() || value.is_array() {
+                    println!("{indent}{key}:");
+                    render_human(value, depth + 1);
+                } else {
+                    println!(
+                        "{indent}{key}: {}",
+                        value
+                            .as_str()
+                            .map(str::to_owned)
+                            .unwrap_or_else(|| value.to_string())
+                    );
+                }
+            }
+        }
+        Value::Array(items) => {
+            for (index, value) in items.iter().enumerate() {
+                println!("{indent}[{}]", index + 1);
+                render_human(value, depth + 1);
+            }
+        }
+        _ => println!(
+            "{indent}{}",
+            value
+                .as_str()
+                .map(str::to_owned)
+                .unwrap_or_else(|| value.to_string())
+        ),
+    }
 }
